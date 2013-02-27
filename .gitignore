@@ -80,3 +80,5 @@ GTAGS
 *.orig
 *~
 \#*#
+
+*.symvers

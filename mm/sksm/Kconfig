@@ -1,0 +1,6 @@
+config SKSM
+	tristate "SKSM is the derivation of KSM."
+	depends on MMU
+	default m
+	help
+	  cryincold@qq.com Sun Yat-sen Unv.

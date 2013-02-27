@@ -400,7 +400,7 @@ void lru_cache_add_lru(struct page *page, enum lru_list lru)
 	VM_BUG_ON(PageLRU(page) || PageActive(page) || PageUnevictable(page));
 	__lru_cache_add(page, lru);
 }
-EXPORT_SYMBOL(__lru_cache_add_lru);
+EXPORT_SYMBOL(lru_cache_add_lru);
 
 /**
  * add_page_to_unevictable_list - add a page to the unevictable list
@@ -799,3 +799,4 @@ void __init swap_setup(void)
 	 * _really_ don't want to cluster much more
 	 */
 }
+

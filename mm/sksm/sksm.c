@@ -2740,3 +2740,4 @@ void __exit sksm_exit(void)
 }
 module_init(sksm_init)
 module_exit(sksm_exit);
+MODULE_LICENSE("GPL");
