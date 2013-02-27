@@ -1589,6 +1589,7 @@ no_page_table:
 		return ERR_PTR(-EFAULT);
 	return page;
 }
+EXPORT_SYMBOL(follow_page);
 
 static inline int stack_guard_page(struct vm_area_struct *vma, unsigned long addr)
 {
@@ -3526,6 +3527,7 @@ retry:
 
 	return handle_pte_fault(mm, vma, address, pte, pmd, flags);
 }
+EXPORT_SYMBOL(handle_mm_fault);
 
 #ifndef __PAGETABLE_PUD_FOLDED
 /*

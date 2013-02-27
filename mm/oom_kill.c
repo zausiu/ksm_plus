@@ -64,6 +64,7 @@ int test_set_oom_score_adj(int new_val)
 
 	return old_val;
 }
+EXPORT_SYMBOL(test_set_oom_score_adj);
 
 #ifdef CONFIG_NUMA
 /**

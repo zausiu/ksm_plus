@@ -873,6 +873,8 @@ struct file *shmem_file_setup(const char *name, loff_t size, unsigned long flags
 int shmem_zero_setup(struct vm_area_struct *);
 
 extern int can_do_mlock(void);
+extern void mlock_vma_page(struct page*);
+extern void munlock_vma_page(struct page*);
 extern int user_shm_lock(size_t, struct user_struct *);
 extern void user_shm_unlock(size_t, struct user_struct *);
 

@@ -400,6 +400,7 @@ void lru_cache_add_lru(struct page *page, enum lru_list lru)
 	VM_BUG_ON(PageLRU(page) || PageActive(page) || PageUnevictable(page));
 	__lru_cache_add(page, lru);
 }
+EXPORT_SYMBOL(__lru_cache_add_lru);
 
 /**
  * add_page_to_unevictable_list - add a page to the unevictable list
@@ -421,6 +422,7 @@ void add_page_to_unevictable_list(struct page *page)
 	add_page_to_lru_list(zone, page, LRU_UNEVICTABLE);
 	spin_unlock_irq(&zone->lru_lock);
 }
+EXPORT_SYMBOL(add_page_to_unevictable_list);
 
 /*
  * If the page can not be invalidated, it is moved to the

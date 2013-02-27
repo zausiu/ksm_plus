@@ -728,6 +728,7 @@ int page_referenced_one(struct page *page, struct vm_area_struct *vma,
 out:
 	return referenced;
 }
+EXPORT_SYMBOL(page_referenced_one);
 
 static int page_referenced_anon(struct page *page,
 				struct mem_cgroup *mem_cont,
@@ -1297,6 +1298,7 @@ out_mlock:
 	}
 	return ret;
 }
+EXPORT_SYMBOL(try_to_unmap_one);
 
 /*
  * objrmap doesn't work for nonlinear VMAs because the assumption that
@@ -1661,6 +1663,7 @@ void __put_anon_vma(struct anon_vma *anon_vma)
 
 	anon_vma_free(anon_vma);
 }
+EXPORT_SYMBOL(__put_anon_vma);
 
 #ifdef CONFIG_MIGRATION
 /*

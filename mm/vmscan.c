@@ -3400,6 +3400,7 @@ int page_evictable(struct page *page, struct vm_area_struct *vma)
 
 	return 1;
 }
+EXPORT_SYMBOL(page_evictable);
 
 /**
  * check_move_unevictable_page - check page for evictability and move to appropriate zone lru list
