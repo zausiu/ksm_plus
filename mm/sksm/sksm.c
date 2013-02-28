@@ -1161,17 +1161,22 @@ static int write_protect_page(struct vm_area_struct *vma, struct page *page,
 	int err = -EFAULT;
 
 	addr = page_address_in_vma(page, vma);
-	if (addr == -EFAULT)
+	if (addr == -EFAULT) {
+		output("page doesn't belong to the vma.\n");
 		goto out;
+	}
 
 	BUG_ON(PageTransCompound(page));
 	// check that page is mapped at the address into mm. Return pte mapped and locked on success.
 	ptep = page_check_address(page, mm, addr, &ptl, 0); 
-	if (!ptep)
+	if (!ptep) {
+		output("page_check_address failed.\n");
 		goto out;
+	}
 
 	if (pte_write(*ptep) || pte_dirty(*ptep)) {
 		pte_t entry;
+		int mapcount, count;
 
 		swapped = PageSwapCache(page);
 		flush_cache_page(vma, addr, page_to_pfn(page));
@@ -1189,8 +1194,11 @@ static int write_protect_page(struct vm_area_struct *vma, struct page *page,
 		 * Check that no O_DIRECT or similar I/O is in progress on the
 		 * page
 		 */
-		if (page_mapcount(page) + 1 + swapped != page_count(page)) {  // why why why here ...
+		mapcount = page_mapcount(page);	
+		count = page_count(page);
+		if ( mapcount + 1 + swapped != count ) { // why why why ...
 			set_pte_at(mm, addr, ptep, entry);
+			output("Err: page_mapcount returns %d, swapped is %d, page_count returns %d.", mapcount, swapped, count);
 			goto out_unlock;
 		}
 		if (pte_dirty(entry))
@@ -1357,7 +1365,8 @@ static int try_to_merge_one_page(struct vm_area_struct *vma,
 			err = 0;
 		} else if (pages_identical(page, kpage))
 			err = replace_page(vma, page, kpage, orig_pte);
-			output("replace_page failed.\n");
+			if ( err ) 
+				output("replace_page failed.\n");
 	} else {
 		output("write_protect_page failed.\n");
 	}
@@ -1611,6 +1620,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 	rb_insert_color(&rmap_item->node, &root_unstable_tree);
 
 	ksm_pages_unshared++;
+
 	return NULL;
 }
 
@@ -1747,7 +1757,7 @@ static void walk_through_tasks(void)
 		pid_nr = p->pid;
 		if ( strcasecmp("mal", comm) == 0 )
 		{
-			pid_nr = p->pid;
+			//pid_nr = p->pid;
 			//output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
 			task_ksm_enter(p);
 		}
@@ -1959,6 +1969,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			addr = kmap_atomic(page);
 			new_check_sum = crc16_checksum(addr, PAGE_SIZE);	
 			kunmap_atomic(addr);
+			put_page(page);
 			if (new_check_sum == old_check_sum) {
 				hit_count++;
 				// create rmap_item ....
@@ -2050,6 +2061,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		addr = kmap_atomic(page);
 		check_sum = crc16_checksum(addr, PAGE_SIZE);	
 		kunmap_atomic(addr);
+		put_page(page);
 		vma_node->samples[i] |= (check_sum << 16);
 	}
 }
