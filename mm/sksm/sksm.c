@@ -46,7 +46,7 @@
 //#include "mm/internal.h"
 
 #define my_output(msg, args...) do {                   \
-	printk(KERN_CRIT"[%s]"msg, __func__, ##args); \
+	printk(KERN_CRIT"kkkk [%s]"msg, __func__, ##args); \
 }while(0)
 
 // pre-declarations.
@@ -258,7 +258,7 @@ static unsigned int ksm_thread_pages_to_scan = 100;
 static unsigned int ksm_thread_processes_to_recruit = 4;
 
 /* Milliseconds ksmd should sleep between batches */
-static unsigned int ksm_thread_sleep_millisecs = 2000;
+static unsigned int sksm_thread_sleep_millisecs = 2000;
 
 #define SKSM_RUN_STOP	0
 #define SKSM_RUN_MERGE	1
@@ -270,25 +270,25 @@ static DECLARE_WAIT_QUEUE_HEAD(sksm_thread_wait);
 static DEFINE_MUTEX(sksm_thread_mutex);
 static DEFINE_SPINLOCK(sksm_mmlist_lock);
 
-#define KSM_KMEM_CACHE(__struct, __flags) kmem_cache_create("ksm_"#__struct,\
+#define SKSM_KMEM_CACHE(__struct, __flags) kmem_cache_create("sksm_"#__struct,\
 		sizeof(struct __struct), __alignof__(struct __struct),\
 		(__flags), NULL)
 
 static int __init sksm_slab_init(void)
 {
-	rmap_item_cache = KSM_KMEM_CACHE(rmap_item, 0);
+	rmap_item_cache = SKSM_KMEM_CACHE(rmap_item, 0);
 	if (!rmap_item_cache)
 		goto out;
 
-	stable_node_cache = KSM_KMEM_CACHE(stable_node, 0);
+	stable_node_cache = SKSM_KMEM_CACHE(stable_node, 0);
 	if (!stable_node_cache)
 		goto out_free1;
 
-	mm_slot_cache = KSM_KMEM_CACHE(mm_slot, 0);
+	mm_slot_cache = SKSM_KMEM_CACHE(mm_slot, 0);
 	if (!mm_slot_cache)
 		goto out_free2;
 	
-	vma_node_cache = KSM_KMEM_CACHE(vma_node, 0);
+	vma_node_cache = SKSM_KMEM_CACHE(vma_node, 0);
 	if (!vma_node_cache)
 		goto out_free3;
 
@@ -304,13 +304,19 @@ out:
 	return -ENOMEM;
 }
 
-static void __init sksm_slab_free(void)
+static void sksm_slab_free(void)
 {
-	kmem_cache_destroy(mm_slot_cache);
-	kmem_cache_destroy(stable_node_cache);
-	kmem_cache_destroy(rmap_item_cache);
-	kmem_cache_destroy(vma_node_cache);
-	mm_slot_cache = NULL;
+	if (vma_node_cache)
+		 kmem_cache_destroy(vma_node_cache);
+
+	if (mm_slot_cache)
+		kmem_cache_destroy(mm_slot_cache);
+
+	if (stable_node_cache)
+		kmem_cache_destroy(stable_node_cache);
+
+	if (rmap_item_cache)
+		kmem_cache_destroy(rmap_item_cache);
 }
 
 static inline struct rmap_item *alloc_rmap_item(void)
@@ -2083,38 +2089,22 @@ static int sksmd_should_run(void)
 
 static int sksm_scan_thread(void *nothing)
 {
-	unsigned int counter;
-	set_freezable();
-	set_user_nice(current, 5);
+	do {
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule_timeout(sksm_thread_sleep_millisecs); 
+		my_output("works.\n");		
+		if (kthread_should_stop())
+			break;
+	} while (!kthread_should_stop());
 
-	counter = 0;
-	
-	my_output("Enter into sksm_scan_thread.\n");
-
-	while (!kthread_should_stop()) {
-		mutex_lock(&sksm_thread_mutex);
-		if (sksmd_should_run()) {
-			my_output("works ... \n");
-		/*	if (!(counter++ % 10)) {
+	return 0;
+}
+/*	if (!(counter++ % 10)) {
 				walk_through_tasks();
 			}*/
 			//sksm_do_recruit(ksm_thread_processes_to_recruit);
 			//sksm_do_scan(ksm_thread_pages_to_scan);
-		}
-		mutex_unlock(&sksm_thread_mutex);
-		
-		try_to_freeze();
 
-		if (sksmd_should_run()) {
-			schedule_timeout_interruptible(
-				msecs_to_jiffies(ksm_thread_sleep_millisecs));
-		} else {
-			wait_event_freezable(sksm_thread_wait,
-				sksmd_should_run() || kthread_should_stop());
-		}
-	} // end of while loop
-	return 0;
-}
 
 int ksm_madvise(struct vm_area_struct *vma, unsigned long start,
 		unsigned long end, int advice, unsigned long *vm_flags)
@@ -2525,7 +2515,7 @@ static int ksm_memory_callback(struct notifier_block *self,
 static ssize_t sleep_millisecs_show(struct kobject *kobj,
 				    struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%u\n", ksm_thread_sleep_millisecs);
+	return sprintf(buf, "%u\n", sksm_thread_sleep_millisecs);
 }
 
 static ssize_t sleep_millisecs_store(struct kobject *kobj,
@@ -2539,7 +2529,7 @@ static ssize_t sleep_millisecs_store(struct kobject *kobj,
 	if (err || msecs > UINT_MAX)
 		return -EINVAL;
 
-	ksm_thread_sleep_millisecs = msecs;
+	sksm_thread_sleep_millisecs = msecs;
 
 	return count;
 }
@@ -2669,7 +2659,7 @@ static ssize_t full_scans_show(struct kobject *kobj,
 }
 KSM_ATTR_RO(full_scans);
 
-static struct attribute *ksm_attrs[] = {
+static struct attribute *sksm_attrs[] = {
 	&sleep_millisecs_attr.attr,
 	&pages_to_scan_attr.attr,
 	&run_attr.attr,
@@ -2678,18 +2668,18 @@ static struct attribute *ksm_attrs[] = {
 	&pages_sharing_attr.attr,
 	&pages_unshared_attr.attr,
 	&pages_volatile_attr.attr,
-	&full_scans_attr.attr,
+	&full_scans_attr.attr, 
 	NULL,
 };
 
-static struct attribute_group ksm_attr_group = {
-	.attrs = ksm_attrs,
-	.name = "ksm",
+static struct attribute_group sksm_attr_group = {
+	.attrs = sksm_attrs,
+	.name = "sksm",
 };
 #endif /* CONFIG_SYSFS */
 
 // The sksmd kernel thread.
-struct task_struct *sksm_thread;
+static struct task_struct *sksm_thread;
 
 int __init sksm_init(void)
 {
@@ -2697,32 +2687,23 @@ int __init sksm_init(void)
 
 	err = sksm_slab_init();
 	if (err)
-		goto out;
-	
-	my_output("Creating kthread.\n");
+		return err;
+
 	sksm_thread = kthread_run(sksm_scan_thread, NULL, "sksmd");
 	if (IS_ERR(sksm_thread)) {
-		my_output("sksm: creating kthread failed\n");
+		my_output("kthread_run failed !!!");
 		err = PTR_ERR(sksm_thread);
 		goto out_free;
 	}
+	my_output("kthread_run ok !!!");
 
-	my_output("Creating sysfs.\n");
-
-	err = sysfs_create_group(mm_kobj, &ksm_attr_group);
+	err = sysfs_create_group(mm_kobj, &sksm_attr_group);
 	if (err) {
-		my_output("ksm: register sysfs failed\n");
+		my_output("sksm: register sysfs failed !!!\n");
 		kthread_stop(sksm_thread);
 		goto out_free;
 	}
-	
-#ifdef CONFIG_MEMORY_HOTREMOVE
-	/*
-	 * Choose a high priority since the callback takes sksm_thread_mutex:
-	 * later callbacks could only be taking locks which nest within that.
-	 */
-	hotplug_memory_notifier(ksm_memory_callback, 100);
-#endif
+
 	return 0;
 
 out_free:
@@ -2735,9 +2716,10 @@ void __exit sksm_exit(void)
 {
 	sksm_run = SKSM_RUN_STOP;
 	kthread_stop(sksm_thread);
-	sysfs_remove_group(mm_kobj, &ksm_attr_group);
+	sysfs_remove_group(mm_kobj, &sksm_attr_group);
 	sksm_slab_free();
 }
+
 module_init(sksm_init)
 module_exit(sksm_exit);
 MODULE_LICENSE("GPL");
