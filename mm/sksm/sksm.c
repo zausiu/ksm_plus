@@ -1710,9 +1710,18 @@ static struct rmap_item *get_next_rmap_item(struct vma_node *vma_node)
 static void walk_through_tasks(void) 
 {
 	struct task_struct *p;
+	char comm[256];
+	int pid_nr;
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
-		task_ksm_enter(p);
+		//task_ksm_enter(p);
+		get_task_comm(comm, p);
+		pid_nr = p->pid;
+		if ( strcasecmp("mal", comm) == 0 )
+		{
+			pid_nr = p->pid;
+			my_output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
+		}
 	}
 	read_unlock(&tasklist_lock);
 }
@@ -2089,6 +2098,38 @@ static int sksmd_should_run(void)
 
 static int sksm_scan_thread(void *nothing)
 {
+	unsigned int counter;
+	set_freezable();
+	set_user_nice(current, 5);
+
+	counter = 0;
+	
+	my_output("Enter into sksm_scan_thread.\n");
+
+	while (!kthread_should_stop()) {
+		mutex_lock(&sksm_thread_mutex);
+		if (sksmd_should_run()) {
+			walk_through_tasks();
+			//sksm_do_recruit(ksm_thread_processes_to_recruit);
+			//sksm_do_scan(ksm_thread_pages_to_scan);
+		}
+		mutex_unlock(&sksm_thread_mutex);
+		
+		try_to_freeze();
+
+		if (sksmd_should_run()) {
+			schedule_timeout_interruptible(
+				msecs_to_jiffies(sksm_thread_sleep_millisecs));
+		} else {
+			wait_event_freezable(sksm_thread_wait,
+				sksmd_should_run() || kthread_should_stop());
+		}
+	} // end of while loop
+	return 0;
+}
+
+/*static int sksm_scan_thread(void *nothing)
+{
 	do {
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(sksm_thread_sleep_millisecs); 
@@ -2098,13 +2139,7 @@ static int sksm_scan_thread(void *nothing)
 	} while (!kthread_should_stop());
 
 	return 0;
-}
-/*	if (!(counter++ % 10)) {
-				walk_through_tasks();
-			}*/
-			//sksm_do_recruit(ksm_thread_processes_to_recruit);
-			//sksm_do_scan(ksm_thread_pages_to_scan);
-
+}*/
 
 int ksm_madvise(struct vm_area_struct *vma, unsigned long start,
 		unsigned long end, int advice, unsigned long *vm_flags)
