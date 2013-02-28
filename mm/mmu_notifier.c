@@ -140,6 +140,7 @@ void __mmu_notifier_change_pte(struct mm_struct *mm, unsigned long address,
 	}
 	rcu_read_unlock();
 }
+EXPORT_SYMBOL(__mmu_notifier_change_pte);
 
 void __mmu_notifier_invalidate_page(struct mm_struct *mm,
 					  unsigned long address)

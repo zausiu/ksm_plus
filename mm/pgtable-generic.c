@@ -90,6 +90,7 @@ pte_t ptep_clear_flush(struct vm_area_struct *vma, unsigned long address,
 	flush_tlb_page(vma, address);
 	return pte;
 }
+EXPORT_SYMBOL(ptep_clear_flush);
 #endif
 
 #ifndef __HAVE_ARCH_PMDP_CLEAR_FLUSH

@@ -570,6 +570,7 @@ int lru_add_drain_all(void)
 {
 	return schedule_on_each_cpu(lru_add_drain_per_cpu);
 }
+EXPORT_SYMBOL(lru_add_drain_all);
 
 /*
  * Batched page_cache_release().  Decrement the reference count on all the

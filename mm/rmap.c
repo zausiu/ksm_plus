@@ -562,6 +562,7 @@ unsigned long page_address_in_vma(struct page *page, struct vm_area_struct *vma)
 		return -EFAULT;
 	return vma_address(page, vma);
 }
+EXPORT_SYMBOL(page_address_in_vma);
 
 /*
  * Check that @page is mapped at @address into @mm.
@@ -618,6 +619,7 @@ check:
 	pte_unmap_unlock(pte, ptl);
 	return NULL;
 }
+EXPORT_SYMBOL(__page_check_address);
 
 /**
  * page_mapped_in_vma - check whether a page is really mapped in a VMA
@@ -1043,6 +1045,7 @@ void page_add_anon_rmap(struct page *page,
 {
 	do_page_add_anon_rmap(page, vma, address, 0);
 }
+EXPORT_SYMBOL(page_add_anon_rmap);
 
 /*
  * Special version of the above for do_swap_page, which often runs
@@ -1174,6 +1177,7 @@ void page_remove_rmap(struct page *page)
 	 * faster for those pages still in swapcache.
 	 */
 }
+EXPORT_SYMBOL(page_remove_rmap);
 
 /*
  * Subfunctions of try_to_unmap: try_to_unmap_one called
