@@ -914,6 +914,9 @@ static int insert_vma_node(struct mm_slot *slot, struct vm_area_struct *vma)
 	rb_link_node(&babe->node, parent, new);
 	rb_insert_color(&babe->node, &slot->vma_root);
 
+	my_output("YYYY a new mergeable vma. mm:%lx start:%lx end:%lx\n",
+		slot->mm, vma->vm_start, vma->vm_end);
+
 	return 0;
 }
 
@@ -1714,13 +1717,13 @@ static void walk_through_tasks(void)
 	int pid_nr;
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
-		//task_ksm_enter(p);
 		get_task_comm(comm, p);
 		pid_nr = p->pid;
 		if ( strcasecmp("mal", comm) == 0 )
 		{
 			pid_nr = p->pid;
-			my_output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
+			//my_output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
+			task_ksm_enter(p);
 		}
 	}
 	read_unlock(&tasklist_lock);
@@ -1810,11 +1813,12 @@ again:
 			push_tiny_stack(&stack, (void*)current_vma_node);
 			continue;
 		}
-		vma_node_do_sampling(current_vma_node);
+		// undo ... vma_node_do_sampling(current_vma_node);
 
 		if (!is_valid_rmap_item_pointer(current_vma_node, current_vma_node->rmap_current))
 		{
 			current_vma_node->rmap_current = current_vma_node->rmap_list;
+			break;
 		}
 
 		while (current_vma_node->rmap_current)  // rmap_current points to a valid rmap_item. 
@@ -2021,7 +2025,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 	}
 }
 
-static void ksm_do_recruit(unsigned int nr)
+static void sksm_do_recruit(unsigned int nr)
 {
 	struct mm_slot *slot;
 	struct mm_struct *mm;
@@ -2029,22 +2033,25 @@ static void ksm_do_recruit(unsigned int nr)
 
 	if (list_empty(&sksm_mm_head.mm_list))
 		return;
+		
+	slot = sksm_scan.mm_slot;
 
 	while (nr-- && likely(!freezing(current)))
 	{
-		slot = sksm_scan.mm_slot;
 		if (slot==&sksm_mm_head)
 		{
 			spin_lock(&sksm_mmlist_lock);
 			slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
 			spin_unlock(&sksm_mmlist_lock);
+			my_output("shift to the next mm_slot.\n");
 		}
 
-		if (slot == &sksm_mm_head)
+		if (slot == &sksm_mm_head){
+			my_output("reach the head, exit!");
 			return;
+		}
 
 		mm = slot->mm;
-
 
 		down_read(&mm->mmap_sem);
 		// At current only one postion in ksmd is responsible to free mm_slot.
@@ -2066,6 +2073,8 @@ static void ksm_do_recruit(unsigned int nr)
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
 		spin_unlock(&sksm_mmlist_lock);
 	}
+	my_output("exit.\n");
+	return 0;
 }
 
 /**
@@ -2110,7 +2119,7 @@ static int sksm_scan_thread(void *nothing)
 		mutex_lock(&sksm_thread_mutex);
 		if (sksmd_should_run()) {
 			walk_through_tasks();
-			//sksm_do_recruit(ksm_thread_processes_to_recruit);
+			sksm_do_recruit(ksm_thread_processes_to_recruit);
 			//sksm_do_scan(ksm_thread_pages_to_scan);
 		}
 		mutex_unlock(&sksm_thread_mutex);
@@ -2207,82 +2216,10 @@ static int task_ksm_enter(struct task_struct *task)
 	insert_to_mm_slots_hash(mm, mm_slot);
 	list_add_tail(&mm_slot->mm_list, &sksm_scan.mm_slot->mm_list);
 	set_bit(MMF_VM_MERGEABLE, &mm->flags);
-	atomic_inc(&mm->mm_count);
+	atomic_inc(&mm->mm_count);   // we have to get a reference count to this mm.
 	spin_unlock(&sksm_mmlist_lock);
 	
 	return 0;
-}
-
-int __ksm_enter(struct mm_struct *mm)
-{
-	struct mm_slot *mm_slot;
-	int needs_wakeup;
-	// we don't use this function of find new process anymore.
-	return 0;
-
-	mm_slot = alloc_mm_slot();
-	if (!mm_slot)
-		return -ENOMEM;
-
-	/* Check sksm_run too?  Would need tighter locking */
-	needs_wakeup = list_empty(&sksm_mm_head.mm_list);
-	spin_lock(&sksm_mmlist_lock);
-	insert_to_mm_slots_hash(mm, mm_slot);
-	/*
-	 * Insert just behind the scanning cursor, to let the area settle
-	 * down a little; when fork is followed by immediate exec, we don't
-	 * want ksmd to waste time setting up and tearing down an rmap_list.
-	 */
-	list_add_tail(&mm_slot->mm_list, &sksm_scan.mm_slot->mm_list);
-	spin_unlock(&sksm_mmlist_lock);
-
-	set_bit(MMF_VM_MERGEABLE, &mm->flags);
-	atomic_inc(&mm->mm_count);
-
-	if (needs_wakeup)
-		wake_up_interruptible(&sksm_thread_wait);
-
-	return 0;
-}
-
-void __ksm_exit(struct mm_struct *mm)
-{
-	struct mm_slot *mm_slot;
-	// int easy_to_free = 0; // it's not so easy to free the mm_slot now.
-
-	/* The following are deprecated comments but still useful.
-	 * This process is exiting: if it's straightforward (as is the
-	 * case when ksmd was never running), free mm_slot immediately.
-	 * But if it's at the cursor or has rmap_items linked to it, use
-	 * mmap_sem to synchronize with any break_cows before pagetables
-	 * are freed, and leave the mm_slot on the list for ksmd to free.
-	 * Beware: ksm may already have noticed it exiting and freed the slot.
-	 */
-
-	spin_lock(&sksm_mmlist_lock);
-	mm_slot = get_mm_slot(mm);
-	if (mm_slot && sksm_scan.mm_slot != mm_slot) {
-		/*if (!mm_slot->rmap_list) {
-			hlist_del(&mm_slot->link);
-			list_del(&mm_slot->mm_list);
-			easy_to_free = 1;
-		} else {
-			list_move(&mm_slot->mm_list,
-				  &sksm_scan.mm_slot->mm_list);
-		}*/
-		list_move(&mm_slot->mm_list, &sksm_scan.mm_slot->mm_list);
-	}
-	spin_unlock(&sksm_mmlist_lock);
-
-	/*if (easy_to_free) {
-		free_mm_slot(mm_slot);
-		clear_bit(MMF_VM_MERGEABLE, &mm->flags);
-		mmdrop(mm);
-	} else */
-	if (mm_slot) {
-		down_write(&mm->mmap_sem);
-		up_write(&mm->mmap_sem);
-	}
 }
 
 struct page *ksm_does_need_to_copy(struct page *page,
