@@ -45,7 +45,7 @@
 #include <asm/tlbflush.h>
 //#include "mm/internal.h"
 
-#define my_output(msg, args...) do {                   \
+#define output(msg, args...) do {                   \
 	printk(KERN_CRIT"kkkk [%s]"msg, __func__, ##args); \
 }while(0)
 
@@ -913,8 +913,10 @@ static int insert_vma_node(struct mm_slot *slot, struct vm_area_struct *vma)
 
 	rb_link_node(&babe->node, parent, new);
 	rb_insert_color(&babe->node, &slot->vma_root);
+	
+	vma->vm_flags |= VM_MERGEABLE;
 
-	my_output("YYYY a new mergeable vma. mm:%lx start:%lx end:%lx\n",
+	output("YYYY a new mergeable vma. mm:%lx start:%lx end:%lx\n",
 		slot->mm, vma->vm_start, vma->vm_end);
 
 	return 0;
@@ -1312,13 +1314,19 @@ static int try_to_merge_one_page(struct vm_area_struct *vma,
 	if (page == kpage)			/* ksm page forked */
 		return 0;
 
-	if (!(vma->vm_flags & VM_MERGEABLE))
+	if (!(vma->vm_flags & VM_MERGEABLE)) {
+		output("not a mergeable vma.\n");
 		goto out;
-	if (PageTransCompound(page) && page_trans_compound_anon_split(page))
+	}
+	if (PageTransCompound(page) && page_trans_compound_anon_split(page)) {
+		output("compound anon.\n");
 		goto out;
+	}
 	BUG_ON(PageTransCompound(page));
-	if (!PageAnon(page))
+	if (!PageAnon(page)) {
+		output("This is not an anonymous page.\n");
 		goto out;
+	}
 
 	/*
 	 * We need the page lock to read a stable PageSwapCache in
@@ -1327,8 +1335,10 @@ static int try_to_merge_one_page(struct vm_area_struct *vma,
 	 * prefer to continue scanning and merging different pages,
 	 * then come back to this page when it is unlocked.
 	 */
-	if (!trylock_page(page))
+	if (!trylock_page(page)) {
+		output("trylock_page failed.\n");
 		goto out;
+	}
 	/*
 	 * If this anonymous page is mapped only here, its pte may need
 	 * to be write-protected.  If it's mapped elsewhere, all of its
@@ -1347,6 +1357,9 @@ static int try_to_merge_one_page(struct vm_area_struct *vma,
 			err = 0;
 		} else if (pages_identical(page, kpage))
 			err = replace_page(vma, page, kpage, orig_pte);
+			output("replace_page failed.\n");
+	} else {
+		output("write_protect_page failed.\n");
 	}
 
 	if ((vma->vm_flags & VM_LOCKED) && kpage && !err) {
@@ -1421,8 +1434,12 @@ static struct page *try_to_merge_two_pages(struct rmap_item *rmap_item,
 		 * If that fails, we have a ksm page with only one pte
 		 * pointing to it: so break it.
 		 */
-		if (err)
+		if (err) {
 			break_cow(rmap_item);
+			output("try_to_merge_with_ksm_page failed.\n");
+		}
+	} else {
+		output("creating ksm page failed.");
 	}
 	return err ? NULL : page;
 }
@@ -1560,7 +1577,10 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 		tree_rmap_item = rb_entry(*new, struct rmap_item, node);
 		tree_page = get_mergeable_page(tree_rmap_item);
 		if (IS_ERR_OR_NULL(tree_page))
+		{
+			output("get_mergeable_page failed.\n");
 			return NULL;
+		}
 
 		/*
 		 * Don't substitute a ksm page for a forked page.
@@ -1634,6 +1654,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	/* We first start with searching the page inside the stable tree */
 	kpage = stable_tree_search(page);
 	if (kpage) {
+		output("found %lx in stable tree.\n", (u64*)kpage);
 		err = try_to_merge_with_ksm_page(rmap_item, page, kpage);
 		if (!err) {
 			/*
@@ -1643,6 +1664,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 			lock_page(kpage);
 			stable_tree_append(rmap_item, page_stable_node(kpage));
 			unlock_page(kpage);
+			output("%lx was merged successfully\n", (u64*)kpage);
 		}
 		put_page(kpage);
 		return;
@@ -1662,9 +1684,11 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 
 	tree_rmap_item =
 		unstable_tree_search_insert(rmap_item, page, &tree_page);
+	output("unstable_tree_search_insert returns: %lx\n", tree_rmap_item);
 	if (tree_rmap_item) {
 		kpage = try_to_merge_two_pages(rmap_item, page,
 						tree_rmap_item, tree_page);
+		output("The same page is in unstable tree, we merge the two pages.\n");
 		put_page(tree_page);
 		/*
 		 * As soon as we merge this page, we want to remove the
@@ -1677,6 +1701,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 			lock_page(kpage);
 			stable_node = stable_tree_insert(kpage);
 			if (stable_node) {
+				output("Move them to stable tree OKAY.\n");	
 				stable_tree_append(tree_rmap_item, stable_node);
 				stable_tree_append(rmap_item, stable_node);
 			}
@@ -1689,6 +1714,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 			 * in which case we need to break_cow on both.
 			 */
 			if (!stable_node) {
+				output("Move them to stable tree FAILED.\n");	
 				break_cow(tree_rmap_item);
 				break_cow(rmap_item);
 			}
@@ -1722,7 +1748,7 @@ static void walk_through_tasks(void)
 		if ( strcasecmp("mal", comm) == 0 )
 		{
 			pid_nr = p->pid;
-			//my_output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
+			//output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
 			task_ksm_enter(p);
 		}
 	}
@@ -1796,7 +1822,6 @@ again:
 	{
 		rb_node = rb_first(&slot->vma_root);
 		slot->curr = rb_entry(rb_node, struct vma_node, node);
-		rb_node = NULL; // Just let the code go to the logic of change mm_slot. 
 	}
 
 	for ( ; rb_node; rb_node = rb_next(rb_node))
@@ -1804,7 +1829,9 @@ again:
 		// get the current vma_node.
 		struct vma_node *current_vma_node = rb_entry(rb_node, struct vma_node, node);
 		slot->curr= current_vma_node;
-		
+		//output("\n\n%d ^^^^^^^^^^ vma_node %lx\n", ++tail_of_the_rmap_list_reached, current_vma_node);		
+		vma_node_do_sampling(current_vma_node);
+
 		// if this vma_node is NOT valid, NULL will be returned.
 		vma = does_vma_exist(mm, current_vma_node);	
 		if (NULL == vma)
@@ -1818,7 +1845,7 @@ again:
 		if (!is_valid_rmap_item_pointer(current_vma_node, current_vma_node->rmap_current))
 		{
 			current_vma_node->rmap_current = current_vma_node->rmap_list;
-			break;
+			continue;
 		}
 
 		while (current_vma_node->rmap_current)  // rmap_current points to a valid rmap_item. 
@@ -1862,7 +1889,7 @@ again:
 						slot->curr = NULL;
 					}
 				}
-				my_output("return item: %lx\n", (u64)item);	
+				output("return item: %lx\n", (u64)item);	
 				return item;
 			}
 			item->address |= INVALID_FLAG;
@@ -1883,6 +1910,8 @@ again:
 	up_read(&mm->mmap_sem);
 	nuke_vma_node_from_stack(slot, &stack);  // clear the invalid vma_node.
 
+	slot->curr = NULL;
+
 	// when reach here, we get no rmap_items to this mm_slot. so, walk to the next mm_slot
 	spin_lock(&sksm_mmlist_lock);
 	slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
@@ -1893,7 +1922,7 @@ again:
 		goto again;  // now let's go to the next mm_slot.
 
 	sksm_scan.seqnr++;
-
+output("EEEEEEEEEEEEEXXXXXXXXXXXXXXXXXIIIIIIIIITTTTTTTT\n");
 	return NULL;
 }
 
@@ -1909,7 +1938,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 
 	volatile struct vma_node *vn = vma_node;
 	int size_of_pages = ((vma_node->end - vma_node->start) >> 12 );
-	my_output("vma_node %lx size_of_pages %d\n", vma_node, size_of_pages);
+	//output("vma_node %lx size_of_pages %d\n", vma_node, size_of_pages);
 
 	// There are records of the last run of vma_node_do_sampling.
 	if (vma_node->samples)
@@ -1918,7 +1947,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		struct rmap_item **item, *new, *sentinel;
 		item = &vma_node->rmap_list;
 		hit_count = 0;
-		my_output("sample_len: %ld\n", vn->sample_len);
+		//output("sample_len: %ld\n", vn->sample_len);
 		for ( i = 0; i < vma_node->sample_len; i++ )
 		{
 			page_index = vma_node->samples[i] & 0x0000ffff;	
@@ -1953,21 +1982,21 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 						new->rmap_list = sentinel;
 						item = &new->rmap_list;
 					} else {
-						my_output("Got a equal rmap_item.");
+						//output("Got a equal rmap_item.");
 						free_rmap_item(new);
 					}
 				} else {
-					my_output("alloc_rmap_item failed.\n");
+					output("alloc_rmap_item failed.\n");
 				}
 			}
 		}
-		if (hit_count >= vma_node->sample_len/3 && vma_node->sample_coefficient < 250)
+		if (hit_count >= vma_node->sample_len/3 && vma_node->sample_coefficient <= 250)
 			vma_node->sample_coefficient += 5;
 		else if ( hit_count < vma_node->sample_len/5 )
 			vma_node->sample_coefficient -= 5;
 		if (vma_node->sample_coefficient < 3)
 			vma_node->sample_coefficient = 3;
-		my_output("sample_coefficient: %d", vn->sample_coefficient);	
+		//output("sample_coefficient: %d", vn->sample_coefficient);	
 		kfree(vma_node->samples);
 		vma_node->samples = NULL;
 		vma_node->sample_len = 0;
@@ -1978,14 +2007,14 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		printk(KERN_EMERG"[%s] kmalloc(%d) failed.\n", __func__, size_of_pages*2);
 		return;
 	}
-	my_output("size_of_pages %d\n", size_of_pages);
+	//output("size_of_pages %d\n", size_of_pages);
 	for ( i = 0; i < size_of_pages; i++ )
 		mem[i] = i;
 	// how many sample page is going to be checked.
 	sample_count = size_of_pages * vma_node->sample_coefficient / 255;	
 	if ( sample_count < 3 )
 		sample_count = 3;
-	my_output("sample_count. %d\n", sample_count);
+	//output("sample_count. %d\n", sample_count);
 	for ( i = 0; i < sample_count; i++ )
 	{
 		u16 tmp;
@@ -2000,7 +2029,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		printk(KERN_EMERG"[%s] kmalloc(%d) failed.\n", __func__, sample_count*4);
 		return;
 	}
-	my_output("vma_node->samples %lx\n", vma_node->samples);
+	//output("vma_node->samples %lx\n", vma_node->samples);
 	memset(vma_node->samples, 0, sample_count*4);
 	vma_node->sample_len = sample_count;
 	for ( i = 0; i < sample_count; i++ ) {
@@ -2043,11 +2072,9 @@ static void sksm_do_recruit(unsigned int nr)
 			spin_lock(&sksm_mmlist_lock);
 			slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
 			spin_unlock(&sksm_mmlist_lock);
-			my_output("shift to the next mm_slot.\n");
 		}
 
 		if (slot == &sksm_mm_head){
-			my_output("reach the head, exit!");
 			return;
 		}
 
@@ -2073,8 +2100,6 @@ static void sksm_do_recruit(unsigned int nr)
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
 		spin_unlock(&sksm_mmlist_lock);
 	}
-	my_output("exit.\n");
-	return 0;
 }
 
 /**
@@ -2089,6 +2114,8 @@ static void sksm_do_scan(unsigned int scan_npages)
 	while (scan_npages-- && likely(!freezing(current))) {
 		cond_resched();
 		rmap_item = scan_get_next_rmap_item(&page);
+		if  (rmap_item) 
+			 output("rmap_item: %lx\n", rmap_item);
 		if (!rmap_item)
 			return;
 		if (!PageKsm(page) || !in_stable_tree(rmap_item)) {
@@ -2113,14 +2140,14 @@ static int sksm_scan_thread(void *nothing)
 
 	counter = 0;
 	
-	my_output("Enter into sksm_scan_thread.\n");
+	output("Enter into sksm_scan_thread.\n");
 
 	while (!kthread_should_stop()) {
 		mutex_lock(&sksm_thread_mutex);
 		if (sksmd_should_run()) {
 			walk_through_tasks();
 			sksm_do_recruit(ksm_thread_processes_to_recruit);
-			//sksm_do_scan(ksm_thread_pages_to_scan);
+			sksm_do_scan(ksm_thread_pages_to_scan);
 		}
 		mutex_unlock(&sksm_thread_mutex);
 		
@@ -2142,7 +2169,7 @@ static int sksm_scan_thread(void *nothing)
 	do {
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(sksm_thread_sleep_millisecs); 
-		my_output("works.\n");		
+		output("works.\n");		
 		if (kthread_should_stop())
 			break;
 	} while (!kthread_should_stop());
@@ -2208,7 +2235,7 @@ static int task_ksm_enter(struct task_struct *task)
 	
 	mm_slot = alloc_mm_slot();	
 	if (!mm_slot) {
-		my_output("alloc_mm_slot failed.\n");
+		output("alloc_mm_slot failed.\n");
 		return -ENOMEM;
 	}
 	
@@ -2659,19 +2686,19 @@ int __init sksm_init(void)
 
 	err = sksm_slab_init();
 	if (err)
-		return err;
+		goto out;
 
 	sksm_thread = kthread_run(sksm_scan_thread, NULL, "sksmd");
 	if (IS_ERR(sksm_thread)) {
-		my_output("kthread_run failed !!!");
+		output("kthread_run failed !!!");
 		err = PTR_ERR(sksm_thread);
 		goto out_free;
 	}
-	my_output("kthread_run ok !!!");
+	output("kthread_run ok !!!");
 
 	err = sysfs_create_group(mm_kobj, &sksm_attr_group);
 	if (err) {
-		my_output("sksm: register sysfs failed !!!\n");
+		output("sksm: register sysfs failed !!!\n");
 		kthread_stop(sksm_thread);
 		goto out_free;
 	}
