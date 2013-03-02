@@ -2147,6 +2147,8 @@ static int sksmd_should_run(void)
 static int sksm_scan_thread(void *nothing)
 {
 	unsigned int counter;
+	struct mm_slot *slot;
+
 	set_freezable();
 	set_user_nice(current, 5);
 
@@ -2173,6 +2175,21 @@ static int sksm_scan_thread(void *nothing)
 				sksmd_should_run() || kthread_should_stop());
 		}
 	} // end of while loop
+
+	while (1)
+	{
+		spin_lock(&sksm_mmlist_lock);
+		slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
+		spin_unlock(&sksm_mmlist_lock);
+
+		if (slot == &sksm_mm_head)
+			break;
+		down_read(&slot->mm->mmap_sem);
+		nuke_mm_slot(slot);
+		up_read(&slot->mm->mmap_sem);
+		mmdrop(slot->mm);
+	}
+
 	return 0;
 }
 
