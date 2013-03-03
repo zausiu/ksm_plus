@@ -46,7 +46,7 @@
 //#include "mm/internal.h"
 
 #define output(msg, args...) do {                   \
-	printk(KERN_CRIT"kkkk [%s]"msg, __func__, ##args); \
+	printk(KERN_CRIT"sksm [%s]"msg, __func__, ##args); \
 }while(0)
 
 // pre-declarations.
@@ -165,7 +165,7 @@ struct rmap_item {
 	};
 };
 
-#define SEQNR_MASK	0x0ff	/* low bits of unstable tree seqnr */
+#define SEQNR_MASK	0x07f	/* low bits of unstable tree seqnr */
 #define UNSTABLE_FLAG	0x100	/* is a node of the unstable tree */
 #define STABLE_FLAG	0x200	/* is listed from the stable tree */
 #define INVALID_FLAG    0x080   /* is an invalid address */
@@ -367,6 +367,7 @@ static inline void free_mm_slot(struct mm_slot *mm_slot)
 	kmem_cache_free(mm_slot_cache, mm_slot);
 }
 
+/* deprecated.
 static struct mm_slot *get_mm_slot(struct mm_struct *mm)
 {
 	struct mm_slot *mm_slot;
@@ -379,7 +380,7 @@ static struct mm_slot *get_mm_slot(struct mm_struct *mm)
 			return mm_slot;
 	}
 	return NULL;
-}
+}*/
 
 static void insert_to_mm_slots_hash(struct mm_struct *mm,
 				    struct mm_slot *mm_slot)
@@ -425,6 +426,7 @@ static int break_ksm(struct vm_area_struct *vma, unsigned long addr)
 	struct page *page;
 	int ret = 0;
 
+	output("calling break_ksm.\n");
 	do {
 		cond_resched();
 		page = follow_page(vma, addr, FOLL_GET);
@@ -648,7 +650,7 @@ static void remove_rmap_item_from_tree(struct rmap_item *rmap_item)
 		 * than left over from before.
 		 */
 		age = (unsigned char)(sksm_scan.seqnr - rmap_item->address);
-		BUG_ON(age > 1);
+		// BUG_ON(age > 1);
 		if (!age)
 			rb_erase(&rmap_item->node, &root_unstable_tree);
 
@@ -692,6 +694,7 @@ static void clear_invalid_rmap_items(struct vma_node *vma_node)
 	}
 }
 
+/*
 // this function walk through the rmap_list hanging off the vma_node and remove the specified rmap_item.
 static void remove_item_from_vma_node(struct vma_node *vma_node, struct rmap_item *trash)
 {
@@ -707,7 +710,7 @@ static void remove_item_from_vma_node(struct vma_node *vma_node, struct rmap_ite
 	}
 	remove_rmap_item_from_tree(trash);
 	free_rmap_item(trash);
-}
+}*/
 // don't use this function to del vma_node->rmap_list. 
 // use vma_node_replace_bellwether instead. 
 /*static void remove_rmap_item(struct rmap_item **prev, struct rmap_item *trash)
@@ -916,8 +919,8 @@ static int insert_vma_node(struct mm_slot *slot, struct vm_area_struct *vma)
 	
 	vma->vm_flags |= VM_MERGEABLE;
 
-	output("YYYY a new mergeable vma. mm:%lx start:%lx end:%lx\n",
-		slot->mm, vma->vm_start, vma->vm_end);
+	output("get a new mergeable vma. mm:%lx start:%lx end:%lx\n",
+		(unsigned long)slot->mm, (unsigned long)vma->vm_start, (unsigned long)vma->vm_end);
 
 	return 0;
 }
@@ -943,9 +946,11 @@ static int unmerge_and_remove_all_rmap_items(void)
                         mm_slot != &sksm_mm_head; mm_slot = sksm_scan.mm_slot) {
                 mm = mm_slot->mm;
                 down_read(&mm->mmap_sem);
+		if (ksm_test_exit(mm)) {
+			up_read(&mm->mmap_sem);
+			break;
+		}
                 for (vma = mm->mmap; vma; vma = vma->vm_next) {
-                        if (ksm_test_exit(mm))
-                                break;
                         if (!(vma->vm_flags & VM_MERGEABLE) || !vma->anon_vma)
                                 continue;
                         err = unmerge_ksm_pages(vma,
@@ -1403,16 +1408,21 @@ static int try_to_merge_with_ksm_page(struct rmap_item *rmap_item,
 	if (ksm_test_exit(mm))
 		goto out;
 	vma = find_vma(mm, rmap_item->address);
-	if (!vma || vma->vm_start > rmap_item->address)
+	if (!vma || vma->vm_start > rmap_item->address) {
+		output("find_vma failed.\n");
 		goto out;
+	}
 
 	err = try_to_merge_one_page(vma, page, kpage);
-	if (err)
+	if (err) {
+		output("try_to_merge_one_page failed.\n");
 		goto out;
+	}
 
 	/* Must get reference to anon_vma while still holding mmap_sem */
 	rmap_item->anon_vma = vma->anon_vma;
 	get_anon_vma(vma->anon_vma);
+	output("get_anon_vma okay.\n");
 out:
 	up_read(&mm->mmap_sem);
 	return err;
@@ -1664,7 +1674,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	/* We first start with searching the page inside the stable tree */
 	kpage = stable_tree_search(page);
 	if (kpage) {
-		output("found %lx in stable tree.\n", (u64*)kpage);
+		output("found %lx in stable tree.\n", (unsigned long)kpage);
 		err = try_to_merge_with_ksm_page(rmap_item, page, kpage);
 		if (!err) {
 			/*
@@ -1674,7 +1684,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 			lock_page(kpage);
 			stable_tree_append(rmap_item, page_stable_node(kpage));
 			unlock_page(kpage);
-			output("%lx was merged successfully\n", (u64*)kpage);
+			output("%lx was merged successfully\n", (unsigned long)kpage);
 		}
 		put_page(kpage);
 		return;
@@ -1694,7 +1704,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 
 	tree_rmap_item =
 		unstable_tree_search_insert(rmap_item, page, &tree_page);
-	output("unstable_tree_search_insert returns: %lx\n", tree_rmap_item);
+	output("unstable_tree_search_insert returns: %lx\n", (unsigned long)tree_rmap_item);
 	if (tree_rmap_item) {
 		kpage = try_to_merge_two_pages(rmap_item, page,
 						tree_rmap_item, tree_page);
@@ -1732,30 +1742,19 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	}
 }
 
-static struct rmap_item *get_next_rmap_item(struct vma_node *vma_node)
-{
-	struct rmap_item *item;
-	item = vma_node->rmap_current;  // -> takes precedence over * operator.
-
-	if (item->rmap_list) {
-		vma_node->rmap_current = item->rmap_list;
-	} else {
-		vma_node->rmap_current = vma_node->rmap_list;	
-	}
-
-	return item;
-}
-
 static void walk_through_tasks(void) 
 {
 	struct task_struct *p;
 	char comm[256];
 	int pid_nr;
+	const char *task_comm = "gnome-terminal";	
+	//const char *task_comm = "mal";	
+
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
 		get_task_comm(comm, p);
 		pid_nr = p->pid;
-		if ( strcasecmp("mal", comm) == 0 )
+		if ( strcasecmp(task_comm, comm) == 0 )
 		{
 			//pid_nr = p->pid;
 			//output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
@@ -1773,6 +1772,7 @@ static struct rmap_item *scan_get_next_rmap_item(struct page **page)
 	struct rb_node *rb_node;
 	struct tiny_stack stack;
 	int tail_of_the_rmap_list_reached;
+	int do_sampling;
 	
 	init_tiny_stack(&stack);
 again:
@@ -1793,7 +1793,14 @@ again:
 		 * so we don't IPI too often when pages_to_scan is set low).
 		 */
 		lru_add_drain_all();
+		
+		/*for (rb_node = rb_first(&root_unstable_tree); rb_node; rb_node = rb_next(rb_node))
+		{
+			struct rmap_item *item = rb_entry(rb_node, struct rmap_item, node);
+			item->address &= ~UNSTABLE_FLAG;
+		}*/
 		root_unstable_tree = RB_ROOT;
+		sksm_scan.seqnr++;
 
 		spin_lock(&sksm_mmlist_lock);
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
@@ -1826,10 +1833,12 @@ again:
 
 	if (is_valid_vma_node_pointer(slot, slot->curr))
 	{
+		do_sampling = 0;
 		rb_node = &slot->curr->node;
 	}
 	else
 	{
+		do_sampling = 1;
 		rb_node = rb_first(&slot->vma_root);
 		slot->curr = rb_entry(rb_node, struct vma_node, node);
 	}
@@ -1840,8 +1849,9 @@ again:
 		struct vma_node *current_vma_node = rb_entry(rb_node, struct vma_node, node);
 		slot->curr= current_vma_node;
 		//output("\n\n%d ^^^^^^^^^^ vma_node %lx\n", ++tail_of_the_rmap_list_reached, current_vma_node);		
-		vma_node_do_sampling(current_vma_node);
-
+		if (do_sampling) {
+			vma_node_do_sampling(current_vma_node);
+		}
 		// if this vma_node is NOT valid, NULL will be returned.
 		vma = does_vma_exist(mm, current_vma_node);	
 		if (NULL == vma)
@@ -1899,7 +1909,7 @@ again:
 						slot->curr = NULL;
 					}
 				}
-				output("return item: %lx\n", (u64)item);	
+				output("return item: %lx\n", (unsigned long)item);	
 				return item;
 			}
 			item->address |= INVALID_FLAG;
@@ -1931,8 +1941,8 @@ again:
 	if(slot != &sksm_mm_head )
 		goto again;  // now let's go to the next mm_slot.
 
-	sksm_scan.seqnr++;
-output("EEEEEEEEEEEEEXXXXXXXXXXXXXXXXXIIIIIIIIITTTTTTTT\n");
+	output("Exit scan_get_next_rmap_item.\n");
+
 	return NULL;
 }
 
@@ -1946,7 +1956,6 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 	struct page *page;
 	unsigned long page_address;
 
-	volatile struct vma_node *vn = vma_node;
 	int size_of_pages = ((vma_node->end - vma_node->start) >> 12 );
 	//output("vma_node %lx size_of_pages %d\n", vma_node, size_of_pages);
 
@@ -1972,34 +1981,54 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			put_page(page);
 			if (new_check_sum == old_check_sum) {
 				hit_count++;
+					
+				while (*item && (*item)->address < page_address) 
+				{
+					struct rmap_item *ri;
+					ri = *item;
+					// The following logic finds if a rmap_item has been left over for too long.
+					// So, we determine that this rmap_item is unlikely to been merged in the future.
+					if (ri && (ri->address & UNSTABLE_FLAG) && !(ri->address & STABLE_FLAG))
+					{
+						char seqnr = (ri->address & SEQNR_MASK);
+						if (seqnr - sksm_scan.seqnr > 8) 
+						{
+							*item = ri->rmap_list;			
+							free_rmap_item(ri);	
+							output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
+							continue;
+						}
+					}
+					item = &(*item)->rmap_list;
+				}
+
+				if ( (*item) && (*item)->address == page_address)
+				{
+					//output("Got a equal rmap_item.");
+					continue;
+				}
+
 				// create rmap_item ....
 				new = alloc_rmap_item();	
-				if (new){
-					new->mm = vma_node->vma->vm_mm;
-					new->address = page_address;
-					while (*item && (*item)->address < page_address) 
-					{
-						item = &(*item)->rmap_list;
-					}
-					if(*item == NULL)
-					{
-						*item = new;
-						item = &new->rmap_list;
-						continue;
-					}
-					else if((*item)->address > page_address) {
-						sentinel = *item;
-						*item = new;
-						new->rmap_list = sentinel;
-						item = &new->rmap_list;
-					} else {
-						//output("Got a equal rmap_item.");
-						free_rmap_item(new);
-					}
-				} else {
-					output("alloc_rmap_item failed.\n");
+				if (NULL == new)
+				{
+					output("alloc_rmap_item failed.\n");		
 				}
-			}
+				new->mm = vma_node->vma->vm_mm;
+				new->address = page_address;
+				if(*item == NULL)
+				{
+					*item = new;
+					item = &new->rmap_list;
+					continue;
+				}
+				else if((*item)->address > page_address) {
+					sentinel = *item;
+					*item = new;
+					new->rmap_list = sentinel;
+					item = &new->rmap_list;
+				} 
+			} // end of if (new_check_sum == old_check_sum) {
 		}
 		if (hit_count >= vma_node->sample_len/3 && vma_node->sample_coefficient <= 250)
 			vma_node->sample_coefficient += 5;
@@ -2007,7 +2036,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			vma_node->sample_coefficient -= 5;
 		if (vma_node->sample_coefficient < 3)
 			vma_node->sample_coefficient = 3;
-		//output("sample_coefficient: %d", vn->sample_coefficient);	
+		output("sample_coefficient: %d", vma_node->sample_coefficient);	
 		kfree(vma_node->samples);
 		vma_node->samples = NULL;
 		vma_node->sample_len = 0;
@@ -2025,7 +2054,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 	sample_count = size_of_pages * vma_node->sample_coefficient / 255;	
 	if ( sample_count < 3 )
 		sample_count = 3;
-	//output("sample_count. %d\n", sample_count);
+	output("sample_count. %d\n", sample_count);
 	for ( i = 0; i < sample_count; i++ )
 	{
 		u16 tmp;
@@ -2127,7 +2156,7 @@ static void sksm_do_scan(unsigned int scan_npages)
 		cond_resched();
 		rmap_item = scan_get_next_rmap_item(&page);
 		if  (rmap_item) 
-			 output("rmap_item: %lx\n", rmap_item);
+			 output("rmap_item: %lx\n", (unsigned long)rmap_item);
 		if (!rmap_item)
 			return;
 		if (!PageKsm(page) || !in_stable_tree(rmap_item)) {
