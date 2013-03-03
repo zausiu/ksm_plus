@@ -46,7 +46,7 @@
 //#include "mm/internal.h"
 
 #define output(msg, args...) do {                   \
-	printk(KERN_CRIT"sksm [%s]"msg, __func__, ##args); \
+	printk(KERN_DEBUG"sksm [%s]"msg, __func__, ##args); \
 }while(0)
 
 // pre-declarations.
@@ -260,8 +260,8 @@ static unsigned int ksm_thread_processes_to_recruit = 4;
 /* Milliseconds ksmd should sleep between batches */
 static unsigned int sksm_thread_sleep_millisecs = 2000;
 
-#define SKSM_RUN_STOP	0
-#define SKSM_RUN_MERGE	1
+#define SKSM_RUN_STOP	        0
+#define SKSM_RUN_MERGE	        1
 #define SKSM_RUN_UNMERGE	2
 //static unsigned int sksm_run = SKSM_RUN_STOP;
 static unsigned int sksm_run = SKSM_RUN_MERGE;
@@ -426,7 +426,7 @@ static int break_ksm(struct vm_area_struct *vma, unsigned long addr)
 	struct page *page;
 	int ret = 0;
 
-	output("calling break_ksm.\n");
+	//output("calling break_ksm.\n");
 	do {
 		cond_resched();
 		page = follow_page(vma, addr, FOLL_GET);
@@ -833,6 +833,8 @@ static int nuke_mm_slot(struct mm_slot *mm_slot)
 {
 	struct rb_node *rb_node;
 	struct vma_node *vma_node;
+
+	clear_bit(MMF_VM_MERGEABLE, &mm_slot->mm->flags);
 	rb_node =  mm_slot->vma_root.rb_node;
 	while (rb_node)
 	{
@@ -912,7 +914,7 @@ static int insert_vma_node(struct mm_slot *slot, struct vm_area_struct *vma)
 	babe->vma = vma;
 	babe->start = vma->vm_start;
 	babe->end = vma->vm_end;
-	babe->sample_coefficient = 10;
+	babe->sample_coefficient = 255;
 
 	rb_link_node(&babe->node, parent, new);
 	rb_insert_color(&babe->node, &slot->vma_root);
@@ -933,67 +935,55 @@ static int unmerge_and_remove_all_rmap_items(void)
 {
         struct mm_slot *mm_slot;
         struct mm_struct *mm;
-	struct vma_node *vma_node;
         struct vm_area_struct *vma;
-	struct rb_node *rb_node;
         int err = 0;
 
         spin_lock(&sksm_mmlist_lock);
-        sksm_scan.mm_slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
+        mm_slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
         spin_unlock(&sksm_mmlist_lock);
-
-        for (mm_slot = sksm_scan.mm_slot;
-                        mm_slot != &sksm_mm_head; mm_slot = sksm_scan.mm_slot) {
+        while (mm_slot != &sksm_mm_head)
+	{
                 mm = mm_slot->mm;
                 down_read(&mm->mmap_sem);
 		if (ksm_test_exit(mm)) {
 			up_read(&mm->mmap_sem);
-			break;
+			continue;
 		}
                 for (vma = mm->mmap; vma; vma = vma->vm_next) {
                         if (!(vma->vm_flags & VM_MERGEABLE) || !vma->anon_vma)
                                 continue;
                         err = unmerge_ksm_pages(vma,
                                                 vma->vm_start, vma->vm_end);
-                        if (err)
-                                goto error;
+                        if (err) {
+				up_read(&mm->mmap_sem);
+                                goto _out;
+			}
                 }
 		up_read(&mm->mmap_sem);
+
 		spin_lock(&sksm_mmlist_lock);
-		sksm_scan.mm_slot = list_entry(mm_slot->mm_list.next, struct mm_slot, mm_list);
+		mm_slot = list_entry(mm_slot->mm_list.next, struct mm_slot, mm_list);
 		spin_unlock(&sksm_mmlist_lock);
 	} // end of for (mm_slot = ... 
-
-        spin_lock(&sksm_mmlist_lock); 	
-        sksm_scan.mm_slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
-        spin_unlock(&sksm_mmlist_lock);
-        for (mm_slot = sksm_scan.mm_slot; mm_slot != &sksm_mm_head; mm_slot = sksm_scan.mm_slot) {
-		mm = mm_slot->mm;
-		for (rb_node = rb_first(&mm_slot->vma_root); rb_node; rb_node = rb_next(rb_node)) {
-			vma_node = rb_entry(rb_node, struct vma_node, node);
-		        remove_trailing_rmap_items(&vma_node->rmap_list);	
-		}
-		
-		spin_lock(&sksm_mmlist_lock);
-		sksm_scan.mm_slot = list_entry(mm_slot->mm_list.next, struct mm_slot, mm_list);
-		if (ksm_test_exit(mm)){
-			nuke_mm_slot(mm_slot);
-			spin_unlock(&sksm_mmlist_lock);
-
-			clear_bit(MMF_VM_MERGEABLE, &mm->flags);
-			up_read(&mm->mmap_sem);
-			mmdrop(mm);
-		} else {
-			spin_unlock(&sksm_mmlist_lock);
-			up_read(&mm->mmap_sem);
-		}
-        }
 	
-	sksm_scan.seqnr = 0;
-	return 0;
+	spin_lock(&sksm_mmlist_lock);
+        mm_slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
+        spin_unlock(&sksm_mmlist_lock);
+	while (mm_slot != &sksm_mm_head)
+	{
+                mm = mm_slot->mm;
+		clear_bit(MMF_VM_MERGEABLE, &mm->flags);
+		nuke_mm_slot(mm_slot);
+		mmdrop(mm);
 
-error:
-        up_read(&mm->mmap_sem);
+		spin_lock(&sksm_mmlist_lock);
+		mm_slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
+		spin_unlock(&sksm_mmlist_lock);
+	} // end of for (mm_slot = ... 
+		
+	sksm_scan.seqnr = 0;
+
+_out:
         spin_lock(&sksm_mmlist_lock);
         sksm_scan.mm_slot = &sksm_mm_head;
         spin_unlock(&sksm_mmlist_lock);
@@ -1747,14 +1737,24 @@ static void walk_through_tasks(void)
 	struct task_struct *p;
 	char comm[256];
 	int pid_nr;
-	const char *task_comm = "gnome-terminal";	
-	//const char *task_comm = "mal";	
+	int i, count; 
+	int matched;
+	const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
 		get_task_comm(comm, p);
 		pid_nr = p->pid;
-		if ( strcasecmp(task_comm, comm) == 0 )
+		matched = 0;	
+		count = sizeof(task_comms)/sizeof(task_comms[0]);
+		for (i = 0; i < count; i++)
+		{
+			if (0 == strcasecmp(task_comms[i], comm))
+			{
+				matched = 1;
+			}
+		}
+		if (matched)
 		{
 			//pid_nr = p->pid;
 			//output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
@@ -1772,7 +1772,6 @@ static struct rmap_item *scan_get_next_rmap_item(struct page **page)
 	struct rb_node *rb_node;
 	struct tiny_stack stack;
 	int tail_of_the_rmap_list_reached;
-	int do_sampling;
 	
 	init_tiny_stack(&stack);
 again:
@@ -1833,14 +1832,13 @@ again:
 
 	if (is_valid_vma_node_pointer(slot, slot->curr))
 	{
-		do_sampling = 0;
 		rb_node = &slot->curr->node;
 	}
 	else
 	{
-		do_sampling = 1;
 		rb_node = rb_first(&slot->vma_root);
 		slot->curr = rb_entry(rb_node, struct vma_node, node);
+		output("Go to the first vma_node %lx.\n", (unsigned long)rb_node);
 	}
 
 	for ( ; rb_node; rb_node = rb_next(rb_node))
@@ -1848,26 +1846,24 @@ again:
 		// get the current vma_node.
 		struct vma_node *current_vma_node = rb_entry(rb_node, struct vma_node, node);
 		slot->curr= current_vma_node;
-		//output("\n\n%d ^^^^^^^^^^ vma_node %lx\n", ++tail_of_the_rmap_list_reached, current_vma_node);		
-		if (do_sampling) {
-			vma_node_do_sampling(current_vma_node);
-		}
+		
 		// if this vma_node is NOT valid, NULL will be returned.
 		vma = does_vma_exist(mm, current_vma_node);	
 		if (NULL == vma)
 		{
 			// save this invalid vma_node. it will be erased later.
 			push_tiny_stack(&stack, (void*)current_vma_node);
+			// output("vma %lx does not exist.\n", (unsigned long)current_vma_node->vma);
 			continue;
 		}
-		// undo ... vma_node_do_sampling(current_vma_node);
 
 		if (!is_valid_rmap_item_pointer(current_vma_node, current_vma_node->rmap_current))
 		{
 			current_vma_node->rmap_current = current_vma_node->rmap_list;
+			vma_node_do_sampling(current_vma_node);
 			continue;
 		}
-
+		
 		while (current_vma_node->rmap_current)  // rmap_current points to a valid rmap_item. 
 		{
 			struct rmap_item *item = current_vma_node->rmap_current;
@@ -1889,6 +1885,7 @@ again:
 			if ( IS_ERR_OR_NULL(*page)){
 				// failed...
 				item->address |= INVALID_FLAG;  // mark the address as invalid.
+				continue;
 			}
 			if (PageAnon(*page) || page_trans_compound_anon(*page)) {
 				// succeeded !!!
@@ -1923,7 +1920,7 @@ again:
 		} else {
 			current_vma_node->rmap_current = NULL;
 		}
-		clear_invalid_rmap_items(current_vma_node);
+		clear_invalid_rmap_items(current_vma_node); 
 	        // when we reach here, we will go to the next vma_node.
 	} // end of for loop. walk through all vam_node.
 
@@ -1957,7 +1954,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 	unsigned long page_address;
 
 	int size_of_pages = ((vma_node->end - vma_node->start) >> 12 );
-	//output("vma_node %lx size_of_pages %d\n", vma_node, size_of_pages);
+	output("vma_node %lx size_of_pages %d\n", (unsigned long)vma_node, size_of_pages);
 
 	// There are records of the last run of vma_node_do_sampling.
 	if (vma_node->samples)
@@ -1975,6 +1972,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			page = follow_page(vma_node->vma, page_address, FOLL_GET);	
 			if (IS_ERR_OR_NULL(page))
 				continue;
+
 			addr = kmap_atomic(page);
 			new_check_sum = crc16_checksum(addr, PAGE_SIZE);	
 			kunmap_atomic(addr);
@@ -1991,7 +1989,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 					if (ri && (ri->address & UNSTABLE_FLAG) && !(ri->address & STABLE_FLAG))
 					{
 						char seqnr = (ri->address & SEQNR_MASK);
-						if (seqnr - sksm_scan.seqnr > 8) 
+						if (seqnr - sksm_scan.seqnr > 1) 
 						{
 							*item = ri->rmap_list;			
 							free_rmap_item(ri);	
@@ -2005,6 +2003,8 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 				if ( (*item) && (*item)->address == page_address)
 				{
 					//output("Got a equal rmap_item.");
+					if ( (*item)->address & STABLE_FLAG )
+						hit_count--;
 					continue;
 				}
 
@@ -2048,12 +2048,14 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		return;
 	}
 	//output("size_of_pages %d\n", size_of_pages);
-	for ( i = 0; i < size_of_pages; i++ )
+	for (i = 0; i < size_of_pages; i++)
 		mem[i] = i;
 	// how many sample page is going to be checked.
 	sample_count = size_of_pages * vma_node->sample_coefficient / 255;	
-	if ( sample_count < 3 )
+	if (sample_count < 3 && size_of_pages < 15)
 		sample_count = 3;
+	if (0 == sample_count)
+		sample_count = 1;
 	output("sample_count. %d\n", sample_count);
 	for ( i = 0; i < sample_count; i++ )
 	{
@@ -2152,7 +2154,7 @@ static void sksm_do_scan(unsigned int scan_npages)
 	struct rmap_item *rmap_item;
 	struct page *uninitialized_var(page);
 
-	while (scan_npages-- && likely(!freezing(current))) {
+	while (scan_npages && likely(!freezing(current))) {
 		cond_resched();
 		rmap_item = scan_get_next_rmap_item(&page);
 		if  (rmap_item) 
@@ -2161,6 +2163,7 @@ static void sksm_do_scan(unsigned int scan_npages)
 			return;
 		if (!PageKsm(page) || !in_stable_tree(rmap_item)) {
 			cmp_and_merge_page(page, rmap_item);
+			scan_npages--;
 		}
 		put_page(page);
 	}
@@ -2169,12 +2172,13 @@ static void sksm_do_scan(unsigned int scan_npages)
 static int sksmd_should_run(void)
 {
 //	return (sksm_run & SKSM_RUN_MERGE) && !list_empty(&sksm_mm_head.mm_list);
-	int run =  sksm_run & SKSM_RUN_MERGE;
+	int run =  sksm_run & SKSM_RUN_MERGE; // The kthread have get the change to run to recruit new task_t;
 	return run;
 }
 
 static int sksm_scan_thread(void *nothing)
 {
+	int err;
 	unsigned int counter;
 	struct mm_slot *slot;
 
@@ -2205,18 +2209,21 @@ static int sksm_scan_thread(void *nothing)
 		}
 	} // end of while loop
 
-	while (1)
-	{
-		spin_lock(&sksm_mmlist_lock);
-		slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
-		spin_unlock(&sksm_mmlist_lock);
+	err = unmerge_and_remove_all_rmap_items();
+	if (err) {
+		while (1)
+		{
+			spin_lock(&sksm_mmlist_lock);
+			slot = list_entry(sksm_mm_head.mm_list.next, struct mm_slot, mm_list);
+			spin_unlock(&sksm_mmlist_lock);
 
-		if (slot == &sksm_mm_head)
-			break;
-		down_read(&slot->mm->mmap_sem);
-		nuke_mm_slot(slot);
-		up_read(&slot->mm->mmap_sem);
-		mmdrop(slot->mm);
+			if (slot == &sksm_mm_head)
+				break;
+			down_read(&slot->mm->mmap_sem);
+			nuke_mm_slot(slot);
+			up_read(&slot->mm->mmap_sem);
+			mmdrop(slot->mm);
+		}
 	}
 
 	return 0;
