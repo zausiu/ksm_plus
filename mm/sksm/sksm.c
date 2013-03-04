@@ -1120,8 +1120,10 @@ malloc_err:
 struct vm_area_struct *does_vma_exist(struct mm_struct *mm, struct vma_node *vma_node)
 {
 	struct vm_area_struct *vma = find_vma(mm, vma_node->start);
-	if (vma && vma->vm_start == vma_node->start && vma->vm_end == vma_node->end)
+	if (vma && vma->vm_mm && vma->vm_start == vma_node->start && vma->vm_end == vma_node->end) {
+		vma_node->vma = vma;	
 		return vma;
+	}
 	else
 		return NULL;
 }
@@ -1989,11 +1991,12 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 					if (ri && (ri->address & UNSTABLE_FLAG) && !(ri->address & STABLE_FLAG))
 					{
 						char seqnr = (ri->address & SEQNR_MASK);
-						if (seqnr - sksm_scan.seqnr > 1) 
+						if (seqnr - sksm_scan.seqnr >= 1) 
 						{
 							*item = ri->rmap_list;			
 							free_rmap_item(ri);	
 							output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
+							hit_count--;
 							continue;
 						}
 					}
@@ -2030,9 +2033,9 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 				} 
 			} // end of if (new_check_sum == old_check_sum) {
 		}
-		if (hit_count >= vma_node->sample_len/3 && vma_node->sample_coefficient <= 250)
+		if (hit_count >= 3*vma_node->sample_len/5 && vma_node->sample_coefficient <= 250)
 			vma_node->sample_coefficient += 5;
-		else if ( hit_count < vma_node->sample_len/5 )
+		else // if ( hit_count < vma_node->sample_len/3 )
 			vma_node->sample_coefficient -= 5;
 		if (vma_node->sample_coefficient < 3)
 			vma_node->sample_coefficient = 3;
