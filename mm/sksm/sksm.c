@@ -518,6 +518,7 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 	struct vm_area_struct *vma;
 	struct page *page;
 
+	output("down_read. mm:%lx\n", (unsigned long)mm);
 	down_read(&mm->mmap_sem);
 	if (ksm_test_exit(mm))
 		goto out;
@@ -1138,7 +1139,9 @@ static int memcmp_pages(struct page *page1, struct page *page2)
 	char *addr1, *addr2;
 	int ret;
 
+	//output("kmap_atomic page1:%lx  vaddr:%lx\n", (unsigned long)page1, page1->virtual);
 	addr1 = kmap_atomic(page1, KM_USER0);
+	//output("kmap_atomic page2:%lx.\n", (unsigned long)page2);
 	addr2 = kmap_atomic(page2, KM_USER1);
 	//ret = memcmp(addr1, addr2, PAGE_SIZE);
 	ret = cmp_x64(addr1, addr2, PAGE_SIZE);
@@ -1597,6 +1600,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			output("get_mergeable_page failed.\n");
 			return NULL;
 		}
+		output("get_mergeable_page okay.\n");
 
 		/*
 		 * Don't substitute a ksm page for a forked page.
@@ -1605,15 +1609,17 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			put_page(tree_page);
 			return NULL;
 		}
-
 		ret = memcmp_pages(page, tree_page);
+		//output("memcmp_pages return %d.\n", ret);
 
 		parent = *new;
 		if (ret < 0) {
 			put_page(tree_page);
+			output("put page okay\n");
 			new = &parent->rb_left;
 		} else if (ret > 0) {
 			put_page(tree_page);
+			output("put page okay\n");
 			new = &parent->rb_right;
 		} else {
 			*tree_pagep = tree_page;
@@ -1672,6 +1678,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 
 	/* We first start with searching the page inside the stable tree */
 	kpage = stable_tree_search(page);
+	output("stable_tree_search returns kpage %lx.\n", (unsigned long)kpage);
 	if (kpage) {
 		output("found %lx in stable tree.\n", (unsigned long)kpage);
 		err = try_to_merge_with_ksm_page(rmap_item, page, kpage);
@@ -1704,7 +1711,7 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 */
 	tree_rmap_item =
 		unstable_tree_search_insert(rmap_item, page, &tree_page);
-	//output("unstable_tree_search_insert returns: %lx\n", (unsigned long)tree_rmap_item);
+	output("unstable_tree_search_insert returns: %lx\n", (unsigned long)tree_rmap_item);
 	if (tree_rmap_item) {
 		kpage = try_to_merge_two_pages(rmap_item, page,
 						tree_rmap_item, tree_page);
@@ -1749,7 +1756,8 @@ static void walk_through_tasks(void)
 	int pid_nr;
 	int i, count; 
 	int matched;
-	const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
+	//const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
+	const char *task_comms[] = {"mal"};
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
@@ -2128,6 +2136,13 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 	gap_len = pages_count / sample_count ;
 	left = right = 0;
 	item = &vma_node->rmap_list;
+
+	/*if (vma_node->coefficient < 100){
+		output("return immediately.\n");
+		//goto __e;
+		return;
+	}*/
+
 	while (1)
 	{
 		left = right;	
@@ -2151,7 +2166,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 				if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
 				{
 					struct rmap_item *ri = *item;
-					//output("Ask: %lx, but %lx now\n", (unsigned long)address, (unsigned long)addr);
+					output("Ask: %lx, but %lx now\n", (unsigned long)address, (unsigned long)addr);
 					*item = ri->rmap_list;			
 					free_rmap_item(ri);	
 					//output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
@@ -2182,17 +2197,18 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			new->rmap_list = (*item)->rmap_list;
 		else
 			new->rmap_list = NULL;
-		page = follow_page(vma_node->vma, address, FOLL_GET);	
+		/*page = follow_page(vma_node->vma, address, FOLL_GET);	
 		if (!IS_ERR_OR_NULL(page))
 		{
 			void *a;
-			/*a = kmap_atomic(page);
+			a = kmap_atomic(page);
 			new->oldchecksum = crc16_checksum(a, PAGE_SIZE);	
-			kunmap_atomic(a);*/
+			kunmap_atomic(a);
 			put_page(page);
-		}
+		}*/
 		*item = new;
 		item = &new->rmap_list;
+
 		//output("push new address %lx\n", (unsigned long)address);
 	}
 			
@@ -2208,8 +2224,8 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			nr++;
 			item = item->rmap_list;
 		}
-		output("vma %lx pages_count: %d rmap_items_count: %d\n",
-			 (unsigned long)vma_node->vma, pages_count, nr);
+		output("vma %lx pages_count: %d rmap_items_count: %d coefficient: %d\n",
+			 (unsigned long)vma_node->vma, pages_count, nr, vma_node->coefficient);
 	}
 	
 }
@@ -2281,6 +2297,7 @@ static void sksm_do_scan(unsigned int scan_npages)
 			return;
 		}
 		if (!PageKsm(page) || !in_stable_tree(rmap_item)) {
+			output("Before entering cmp_and_merge_page.\n");
 			cmp_and_merge_page(page, rmap_item);
 			scan_npages--;
 		}
@@ -2314,18 +2331,19 @@ static int sksm_scan_thread(void *nothing)
 			walk_through_tasks();
 			sksm_do_recruit(ksm_thread_processes_to_recruit);
 			sksm_do_scan(ksm_thread_pages_to_scan);
+			output("###### Heart beat ...\n");
 		}
 		mutex_unlock(&sksm_thread_mutex);
 		
-		try_to_freeze();
+		//try_to_freeze();
 
-		if (sksmd_should_run()) {
+		//if (sksmd_should_run()) {
 			schedule_timeout_interruptible(
 				msecs_to_jiffies(sksm_thread_sleep_millisecs));
-		} else {
-			wait_event_freezable(sksm_thread_wait,
-				sksmd_should_run() || kthread_should_stop());
-		}
+		//} else {
+		//	wait_event_freezable(sksm_thread_wait,
+		//		sksmd_should_run() || kthread_should_stop());
+		//}
 	} // end of while loop
 
 	err = unmerge_and_remove_all_rmap_items();
