@@ -153,15 +153,16 @@ struct unstable_node {
 struct rmap_item {
 	struct rmap_item *rmap_list;
 	struct mm_struct *mm;
-	struct anon_vma *anon_vma;	/* when stable */
 	unsigned long address;		/* + low bits used for flags below */
 	union {
 		struct {
+			u16 oldchecksum;
 			struct rb_node node;  /* when node of unstable tree */
 		};
 		struct {		/* when listed from stable tree */
 			struct stable_node *head;
 			struct hlist_node hlist;
+			struct anon_vma *anon_vma;	/* when stable */
 		};
 	};
 };
@@ -1663,6 +1664,8 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	struct page *tree_page = NULL;
 	struct stable_node *stable_node;
 	struct page *kpage;
+	void *addr;
+	u16 checksum;
 	int err;
 
 	remove_rmap_item_from_tree(rmap_item);
@@ -1686,21 +1689,22 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 		return;
 	}
 
-	/* Deprecated comments. New implementation don't use the following logic.
-	 * If the hash value of the page has changed from the last time
+	/* If the hash value of the page has changed from the last time
 	 * we calculated it, this page is changing frequently: therefore we
 	 * don't want to insert it in the unstable tree, and we don't want
 	 * to waste our time searching for something identical to it there.
 	 */
-	/*checksum = calc_checksum(page);
+/*	addr = kmap_atomic(page);
+	checksum = crc16_checksum(addr, PAGE_SIZE);	
+	kunmap_atomic(addr);
 	if (rmap_item->oldchecksum != checksum) {
 		rmap_item->oldchecksum = checksum;
 		return;
-	}*/
-
+	}
+*/
 	tree_rmap_item =
 		unstable_tree_search_insert(rmap_item, page, &tree_page);
-	output("unstable_tree_search_insert returns: %lx\n", (unsigned long)tree_rmap_item);
+	//output("unstable_tree_search_insert returns: %lx\n", (unsigned long)tree_rmap_item);
 	if (tree_rmap_item) {
 		kpage = try_to_merge_two_pages(rmap_item, page,
 						tree_rmap_item, tree_page);
@@ -2134,7 +2138,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		}
 
 		index = left + random32() % gap_len;
-		// output("left: %d, right: %d, hit: %d\n", left, right, index);
+		output("left: %d, right: %d, hit: %d\n", left, right, index);
 		address = vma_node->start + (index << 12);
 		
 		while (*item && ((*item)->address & PAGE_MASK) < address)
@@ -2182,9 +2186,9 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		if (!IS_ERR_OR_NULL(page))
 		{
 			void *a;
-			a = kmap_atomic(page);
-			//new->checksum = crc16_checksum(a, PAGE_SIZE);	
-			kunmap_atomic(a);
+			/*a = kmap_atomic(page);
+			new->oldchecksum = crc16_checksum(a, PAGE_SIZE);	
+			kunmap_atomic(a);*/
 			put_page(page);
 		}
 		*item = new;
