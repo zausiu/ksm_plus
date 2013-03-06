@@ -180,6 +180,15 @@ static struct rb_root root_unstable_tree = RB_ROOT;
 #define MM_SLOTS_HASH_HEADS (1 << MM_SLOTS_HASH_SHIFT)
 static struct hlist_head mm_slots_hash[MM_SLOTS_HASH_HEADS];
 
+// data structures for processes_to_scan.
+static DEFINE_SPINLOCK(processes_to_scan_lock);
+LIST_HEAD(processes_to_scan_head);
+struct process_to_scan
+{
+	char* comm;
+	struct list_head list;
+};
+
 //////////////////////////////////////////////
 // The following code implements a simple stack.
 ////////////////////////////////////////////////////////
@@ -240,6 +249,7 @@ static struct kmem_cache *rmap_item_cache;
 static struct kmem_cache *stable_node_cache;
 static struct kmem_cache *mm_slot_cache;
 static struct kmem_cache *vma_node_cache;
+static struct kmem_cache *processes_to_scan_cache;
 
 /* The number of nodes in the stable tree */
 static unsigned long ksm_pages_shared;
@@ -294,8 +304,14 @@ static int __init sksm_slab_init(void)
 	if (!vma_node_cache)
 		goto out_free3;
 
+	processes_to_scan_cache = SKSM_KMEM_CACHE(process_to_scan, 0);
+	if (!processes_to_scan_cache)
+		goto out_free4;
+
 	return 0;
 
+out_free4:
+	kmem_cache_destroy(vma_node_cache);
 out_free3:
 	kmem_cache_destroy(mm_slot_cache);
 out_free2:
@@ -319,6 +335,9 @@ static void sksm_slab_free(void)
 
 	if (rmap_item_cache)
 		kmem_cache_destroy(rmap_item_cache);
+
+	if (processes_to_scan_cache)
+		kmem_cache_destroy(processes_to_scan_cache);
 }
 
 static inline struct rmap_item *alloc_rmap_item(void)
@@ -369,6 +388,40 @@ static inline void free_mm_slot(struct mm_slot *mm_slot)
 	kmem_cache_free(mm_slot_cache, mm_slot);
 }
 
+static inline struct process_to_scan *alloc_process_to_scan(void)
+{
+	return kmem_cache_zalloc(processes_to_scan_cache, GFP_KERNEL);
+}
+
+static inline void free_process_to_scan(struct process_to_scan *pts)
+{
+	kmem_cache_free(processes_to_scan_cache, pts);
+}
+
+static int process2scan_exist(const char* comm)
+{
+	struct process_to_scan *pts;
+	list_for_each_entry(pts, &processes_to_scan_head, list)
+	{
+		if (0 == strcmp(comm, pts->comm)) 
+			return 1;
+	}
+	return 0;
+}
+static void destroy_processes_to_scan(void)
+{
+	struct process_to_scan *pts, *pts2;
+	
+	spin_lock(&processes_to_scan_lock);
+	list_for_each_entry_safe(pts, pts2, &processes_to_scan_head, list)
+	{
+		kfree(pts->comm);
+		list_del(&pts->list);
+		free_process_to_scan(pts);
+	}
+	spin_unlock(&processes_to_scan_lock);
+
+}
 /* deprecated.
 static struct mm_slot *get_mm_slot(struct mm_struct *mm)
 {
@@ -993,6 +1046,7 @@ _out:
         spin_lock(&sksm_mmlist_lock);
         sksm_scan.mm_slot = &sksm_mm_head;
         spin_unlock(&sksm_mmlist_lock);
+	output("exit.\n");
         return err;
 }
 #endif /* CONFIG_SYSFS */
@@ -1701,14 +1755,14 @@ static void cmp_and_merge_page(struct page *page, struct rmap_item *rmap_item)
 	 * don't want to insert it in the unstable tree, and we don't want
 	 * to waste our time searching for something identical to it there.
 	 */
-/*	addr = kmap_atomic(page);
+	addr = kmap_atomic(page);
 	checksum = crc16_checksum(addr, PAGE_SIZE);	
 	kunmap_atomic(addr);
 	if (rmap_item->oldchecksum != checksum) {
 		rmap_item->oldchecksum = checksum;
 		return;
 	}
-*/
+
 	tree_rmap_item =
 		unstable_tree_search_insert(rmap_item, page, &tree_page);
 	output("unstable_tree_search_insert returns: %lx\n", (unsigned long)tree_rmap_item);
@@ -1754,24 +1808,29 @@ static void walk_through_tasks(void)
 	struct task_struct *p;
 	char comm[256];
 	int pid_nr;
-	int i, count; 
+	//int i, count; 
 	int matched;
 	//const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
-	const char *task_comms[] = {"mal"};
+	//const char *task_comms[] = {"mal"};
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
 		get_task_comm(comm, p);
 		pid_nr = p->pid;
 		matched = 0;	
-		count = sizeof(task_comms)/sizeof(task_comms[0]);
+		// testing code...
+	/*	count = sizeof(task_comms)/sizeof(task_comms[0]);
 		for (i = 0; i < count; i++)
 		{
 			if (0 == strcasecmp(task_comms[i], comm))
 			{
 				matched = 1;
 			}
-		}
+		}*/
+		spin_lock(&processes_to_scan_lock);		
+		matched = process2scan_exist(comm);
+		spin_unlock(&processes_to_scan_lock);		
+	
 		if (matched)
 		{
 			//pid_nr = p->pid;
@@ -2167,7 +2226,8 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 				{
 					struct rmap_item *ri = *item;
 					output("Ask: %lx, but %lx now\n", (unsigned long)address, (unsigned long)addr);
-					*item = ri->rmap_list;			
+					*item = ri->rmap_list;			 
+					remove_rmap_item_from_tree(ri);
 					free_rmap_item(ri);	
 					//output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 					continue;
@@ -2197,7 +2257,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			new->rmap_list = (*item)->rmap_list;
 		else
 			new->rmap_list = NULL;
-		/*page = follow_page(vma_node->vma, address, FOLL_GET);	
+		page = follow_page(vma_node->vma, address, FOLL_GET);	
 		if (!IS_ERR_OR_NULL(page))
 		{
 			void *a;
@@ -2205,7 +2265,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			new->oldchecksum = crc16_checksum(a, PAGE_SIZE);	
 			kunmap_atomic(a);
 			put_page(page);
-		}*/
+		}
 		*item = new;
 		item = &new->rmap_list;
 
@@ -2335,15 +2395,15 @@ static int sksm_scan_thread(void *nothing)
 		}
 		mutex_unlock(&sksm_thread_mutex);
 		
-		//try_to_freeze();
+		try_to_freeze();
 
-		//if (sksmd_should_run()) {
+		if (sksmd_should_run()) {
 			schedule_timeout_interruptible(
 				msecs_to_jiffies(sksm_thread_sleep_millisecs));
-		//} else {
-		//	wait_event_freezable(sksm_thread_wait,
-		//		sksmd_should_run() || kthread_should_stop());
-		//}
+		} else {
+			wait_event_freezable(sksm_thread_wait,
+				sksmd_should_run() || kthread_should_stop());
+		}
 	} // end of while loop
 
 	err = unmerge_and_remove_all_rmap_items();
@@ -2860,6 +2920,72 @@ static ssize_t full_scans_show(struct kobject *kobj,
 }
 KSM_ATTR_RO(full_scans);
 
+static ssize_t processes_to_scan_show(struct kobject *kobj,
+				  struct kobj_attribute *attr, char *buf)
+{
+	struct process_to_scan *pts;
+	int count;
+	count = 0;
+	list_for_each_entry(pts, &processes_to_scan_head, list)
+	{
+		count += sprintf(buf + count, "%s\n", pts->comm);
+	}
+	return count;
+}
+static ssize_t processes_to_scan_store(struct kobject *kobj,
+				   struct kobj_attribute *attr,
+				   const char *buf, size_t count)
+{
+	char op;
+	char comm[64];
+	int exist;
+	int len;
+	struct process_to_scan *pts;
+
+	sscanf(buf, "%c %s", &op, comm);
+	output("%c %s\n", op, comm);
+	len = strlen(comm);
+	
+	spin_lock(&processes_to_scan_lock);
+	exist = process2scan_exist(comm);
+	output("Exist %d\n", exist);
+	if (op == '+' && !exist)
+	{
+		pts = alloc_process_to_scan();
+		pts->comm = kmalloc(len+1, GFP_KERNEL);
+		if (!pts->comm) {
+			free_process_to_scan(pts);
+			goto _err;
+		}
+		strcpy(pts->comm, comm);	
+		list_add(&pts->list, &processes_to_scan_head);
+		goto _out;
+	}
+	else if (op == '-' && exist)
+	{
+		list_for_each_entry(pts, &processes_to_scan_head, list)
+		{
+			if (0 == strcmp(comm, pts->comm)) 
+			{
+				list_del(&pts->list);
+				kfree(pts->comm);
+				free_process_to_scan(pts);
+				output("remove okay.\n");
+				goto _out;
+			}
+		}
+		goto _err;
+	}
+
+_out:
+	spin_unlock(&processes_to_scan_lock);
+	return count;
+_err:
+	spin_unlock(&processes_to_scan_lock);
+	return -EINVAL;
+}
+KSM_ATTR(processes_to_scan);
+
 static struct attribute *sksm_attrs[] = {
 	&sleep_millisecs_attr.attr,
 	&pages_to_scan_attr.attr,
@@ -2870,6 +2996,7 @@ static struct attribute *sksm_attrs[] = {
 	&pages_unshared_attr.attr,
 	&pages_volatile_attr.attr,
 	&full_scans_attr.attr, 
+	&processes_to_scan_attr.attr,
 	NULL,
 };
 
@@ -2918,6 +3045,7 @@ void __exit sksm_exit(void)
 	sksm_run = SKSM_RUN_STOP;
 	kthread_stop(sksm_thread);
 	sysfs_remove_group(mm_kobj, &sksm_attr_group);
+	destroy_processes_to_scan();
 	sksm_slab_free();
 }
 
