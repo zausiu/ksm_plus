@@ -98,8 +98,16 @@ struct mm_slot {
 	struct hlist_node link;
 	struct list_head mm_list;
 	struct mm_struct *mm;
-	struct rb_root vma_root;  // the new-added field.
-	struct vma_node *curr;
+	union {
+		struct {
+			struct rb_root vma_root;  // the new-added field.
+			struct vma_node *curr;
+		};
+		struct {
+			struct rmap_item *rmap_list;
+			unsigned long address;
+		};
+	};
 };
 
 /**
@@ -129,7 +137,7 @@ struct stable_node {
 	struct rb_node node;
 	struct hlist_head hlist;
 	unsigned long kpfn;
-	u8 md5sum[16];
+	//u8 md5sum[16];
 };
 
 /* i think it doesn't worth creating a unstable node. */
@@ -264,19 +272,21 @@ static unsigned long ksm_pages_unshared;
 static unsigned long ksm_rmap_items;
 
 /* Number of pages ksmd should scan in one batch */
-static unsigned int ksm_thread_pages_to_scan = 100;
+static unsigned int ksm_thread_pages_to_scan = 200;
 
 /* number of processes ksmd should scan to recruit new vm_area_structs. */
 static unsigned int ksm_thread_processes_to_recruit = 4;
 
 /* Milliseconds ksmd should sleep between batches */
-static unsigned int sksm_thread_sleep_millisecs = 2000;
+static unsigned int sksm_thread_sleep_millisecs = 1000;
 
 #define SKSM_RUN_STOP	        0
 #define SKSM_RUN_MERGE	        1
 #define SKSM_RUN_UNMERGE	2
+#define SKSM_RUN_f0PAGES_ONLY    3
 //static unsigned int sksm_run = SKSM_RUN_STOP;
-static unsigned int sksm_run = SKSM_RUN_MERGE;
+//static unsigned int sksm_run = SKSM_RUN_MERGE;
+static unsigned int sksm_run = SKSM_RUN_f0PAGES_ONLY;
 
 static DECLARE_WAIT_QUEUE_HEAD(sksm_thread_wait);
 static DEFINE_MUTEX(sksm_thread_mutex);
@@ -727,6 +737,23 @@ static void remove_trailing_rmap_items(struct rmap_item **rmap_list)
 	}
 }
 
+static void reset_mm_slot_address(struct mm_slot *slot)
+{
+	struct rmap_item *rmap_item;
+	struct rmap_item **rmap_list;
+	rmap_list = &slot->rmap_list;
+
+	while (*rmap_list) {
+		rmap_item = *rmap_list;
+		if ((rmap_item->address & PAGE_MASK) < slot->address)
+			rmap_list = &rmap_item->rmap_list;
+		else
+			break;
+	}
+	remove_trailing_rmap_items(rmap_list);
+	slot->address = 0;
+}
+
 // if address field in rmap_item has the INVALID_FLAG set, this rmap_item is considered to be invalid.
 static void clear_invalid_rmap_items(struct vma_node *vma_node)
 {
@@ -851,7 +878,7 @@ static int is_mergeable_vma(struct vm_area_struct *vma)
 		return 0;
 
 	pages_count = (((u64)vma->vm_end - (u64)vma->vm_start)>>12);
-	if (pages_count < 8 || pages_count > 0xffff)
+	if (pages_count < 8 ) // || pages_count > 0xffff)
 	{
 		//printk(KERN_EMERG"a huge anonymous vm_area encountered. MM address: %lX\n", vma->vm_mm);
 		return 0;
@@ -902,6 +929,8 @@ static int nuke_mm_slot(struct mm_slot *mm_slot)
 		nuke_vma_node(mm_slot, vma_node);
 		rb_node = mm_slot->vma_root.rb_node;
 	}
+
+	// remove the mm_slot from hash_table and the global list.
 	spin_lock(&sksm_mmlist_lock);
 	hlist_del(&mm_slot->link);
 	list_del(&mm_slot->mm_list);
@@ -1031,8 +1060,10 @@ static int unmerge_and_remove_all_rmap_items(void)
 	while (mm_slot != &sksm_mm_head)
 	{
                 mm = mm_slot->mm;
+		down_read(&mm->mmap_sem);	
 		clear_bit(MMF_VM_MERGEABLE, &mm->flags);
 		nuke_mm_slot(mm_slot);
+		up_read(&mm->mmap_sem);
 		mmdrop(mm);
 
 		spin_lock(&sksm_mmlist_lock);
@@ -1120,7 +1151,7 @@ static u32 calc_checksum(struct page *page)
  * compare two block of memory in unit of 8-byte.
  * This function is written in x86 assembly so it runs faster than the normal c code version.
  */
-long cmp_x64(void *left, void *right, size_t n)
+static long cmp_x64(void *left, void *right, size_t n)
 {
 	size_t num = n / 8;
 	register long res = 0;
@@ -1140,10 +1171,75 @@ long cmp_x64(void *left, void *right, size_t n)
 	return res;
 }
 
+/*This function print a block of binary memory into human-readable hexideciam string.*/
+static char* bins2hexs(const unsigned char* mem, int mem_len, char* buff, int buff_len)
+{
+	int len_expected, i;
+	char *buff_expected;
+	char small_buff[3];
+
+	if ( NULL == mem || 0 == mem_len || NULL == buff || 0 == buff_len ) 
+	{
+		if ( NULL != buff && 0 != buff_len )
+		{
+			memset(buff, 0, buff_len);
+			return buff;
+		}
+		else
+		{
+			return NULL;
+		}
+	}
+
+	memset(buff, 0, buff_len);
+
+	len_expected = mem_len * 2;
+	//char* buff_expected = new char[len_expected];
+	buff_expected = kmalloc(len_expected, GFP_KERNEL);
+	for ( i = 0; i < mem_len; i ++ )
+	{
+		int height = ( (mem[i] & 0xf0) >> 4);
+		int low = (mem[i] & 0x0f);
+
+		sprintf(small_buff, "%X", height);
+		sprintf(small_buff+1, "%X", low);
+		
+		memcpy(buff_expected + i * 2, small_buff, 2);
+	}
+	
+	if ( buff_len >= len_expected )
+	{
+		memcpy(buff, buff_expected, len_expected);
+	}
+
+	//delete []buff_expected;
+	kfree(buff_expected);
+
+	return buff;
+}
+
+static unsigned long simple_page_sum(const char* page_addr)
+{
+	int i;
+	unsigned long sum;
+	unsigned int *ptr;
+
+	sum = 0;
+	ptr = (unsigned int*)page_addr;
+
+	for (i = 0; i < 1024; i++)
+	{
+		sum += (unsigned long)ptr[i];
+		output("sum %d %u %lu\n", i, page_addr[i], sum);
+	}
+
+	return 0;
+}
+
 /**
  * this is the function of calculate the md5 hash code.
  */
-int md5_hash(const char *mem, u32 len, u8 *hash)
+static int md5_hash(const char *mem, u32 len, u8 *hash)
 {
 	u32 size;
 	struct shash_desc *sdescmd5;
@@ -1177,7 +1273,7 @@ malloc_err:
       return err;
 }
 
-struct vm_area_struct *does_vma_exist(struct mm_struct *mm, struct vma_node *vma_node)
+static struct vm_area_struct *does_vma_exist(struct mm_struct *mm, struct vma_node *vma_node)
 {
 	struct vm_area_struct *vma = find_vma(mm, vma_node->start);
 	if (vma && vma->vm_mm && vma->vm_start == vma_node->start && vma->vm_end == vma_node->end) {
@@ -1562,6 +1658,43 @@ static struct page *stable_tree_search(struct page *page)
 	return NULL;
 }
 
+static void print_the_stable_tree(void)
+{
+	struct rb_node *rb_node;
+	struct stable_node *stable_node;
+	struct page *page;
+	//struct rmap_item *item;
+	struct hlist_node *hlist_node;
+	char *buff;
+	int buff_len;
+	int count;
+	unsigned long sum;
+	void *addr;
+	
+	buff_len = 4096 * 2 + 1;
+	buff = kmalloc(buff_len, GFP_KERNEL);
+	if (!buff)
+		return;
+	memset(buff, 0, buff_len);
+
+	for (rb_node = rb_first(&root_stable_tree); rb_node; rb_node = rb_next(rb_node))
+	{
+		stable_node = rb_entry(rb_node, struct stable_node, node);	
+		count = 0;		
+
+		hlist_for_each(hlist_node, &stable_node->hlist)
+			count++;
+
+		page = pfn_to_page(stable_node->kpfn);
+		addr = kmap_atomic(page); 
+		sum =  simple_page_sum(addr);
+		bins2hexs(addr, 4096, buff, buff_len);
+		kunmap_atomic(addr);
+		output("%d %lx %s\n", count, sum, buff);
+	}
+	kfree(buff);
+}
+
 /*
  * stable_tree_insert - insert rmap_item pointing to new ksm page
  * into the stable tree.
@@ -1681,6 +1814,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 		}
 	}
 
+	rmap_item->address &= 0xfffffffffffffc00;
 	rmap_item->address |= UNSTABLE_FLAG;
 	rmap_item->address |= (sksm_scan.seqnr & SEQNR_MASK);
 	rb_link_node(&rmap_item->node, parent, new);
@@ -1811,7 +1945,6 @@ static void walk_through_tasks(void)
 	//int i, count; 
 	int matched;
 	//const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
-	//const char *task_comms[] = {"mal"};
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
@@ -1827,9 +1960,16 @@ static void walk_through_tasks(void)
 				matched = 1;
 			}
 		}*/
-		spin_lock(&processes_to_scan_lock);		
-		matched = process2scan_exist(comm);
-		spin_unlock(&processes_to_scan_lock);		
+		if (SKSM_RUN_f0PAGES_ONLY != sksm_run)
+		{
+			spin_lock(&processes_to_scan_lock);		
+			matched = process2scan_exist(comm);
+			spin_unlock(&processes_to_scan_lock);		
+		}
+		else
+		{
+			matched = (pid_nr > 100 ? 1 : 0);
+		}
 	
 		if (matched)
 		{
@@ -2016,6 +2156,139 @@ again:
 		goto again;  // now let's go to the next mm_slot.
 
 	output("Exit scan_get_next_rmap_item.\n");
+
+	return NULL;
+}
+
+// This function is for f0pages only.
+static struct rmap_item *get_next_rmap_item(struct mm_slot *slot)
+{
+	struct rmap_item *rmap_item;
+	struct rmap_item **rmap_list;
+	
+	rmap_list = &slot->rmap_list;
+
+	while (*rmap_list) {
+		rmap_item = *rmap_list;
+		if ((rmap_item->address & PAGE_MASK) < slot->address)
+			rmap_list = &rmap_item->rmap_list;
+	}
+
+	if ( *rmap_list && (rmap_item->address & PAGE_MASK) == slot->address)
+		return rmap_item;
+
+	rmap_item = alloc_rmap_item();
+	if (rmap_item) {
+		rmap_item->mm = slot->mm;
+		rmap_item->address = slot->address;
+		rmap_item->rmap_list = *rmap_list;
+		*rmap_list = rmap_item;
+	}
+
+	return rmap_item;
+}
+
+static struct rmap_item *scan_get_next_rmap_item_f0pages(struct page **page)
+{
+	struct mm_struct *mm;
+	struct mm_slot *slot;
+	struct vm_area_struct *vma;
+	struct rmap_item *rmap_item;
+	unsigned long page_sum;
+	void *addr;
+
+again:
+	if (list_empty(&sksm_mm_head.mm_list))
+		return NULL;
+
+	slot = sksm_scan.mm_slot;
+	if (slot==&sksm_mm_head) // restart ...
+	{
+		
+		lru_add_drain_all();
+		
+		root_unstable_tree = RB_ROOT;
+		sksm_scan.seqnr++;
+
+		spin_lock(&sksm_mmlist_lock);
+		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
+		sksm_scan.mm_slot = slot;
+		spin_unlock(&sksm_mmlist_lock);
+
+		if (slot == &sksm_mm_head)
+			return NULL;
+	} // end of the case of restarting.
+	
+	mm = slot->mm;
+	down_read(&mm->mmap_sem);	
+	if (ksm_test_exit(mm)) {   // the process has exited.
+		vma = NULL;
+		slot->address = 0;
+	} else {
+		vma = find_vma(mm, slot->address);
+	}
+
+	for (; vma; vma = vma->vm_next)
+	{
+		if (!is_mergeable_vma(vma))
+			continue;
+		if (slot->address < vma->vm_start)
+			slot->address = vma->vm_start;
+
+		while (slot->address < vma->vm_end) {
+			*page = follow_page(vma, slot->address, FOLL_GET);
+			if (IS_ERR_OR_NULL(*page)){
+				slot->address += PAGE_SIZE;
+				cond_resched();
+				continue;
+			}
+			addr = kmap_atomic(*page);
+			page_sum = simple_page_sum(addr);
+			kunmap_atomic(addr);
+			if ( 0 == page_sum || 0x3fffffffc00 == page_sum || PageAnon(*page)
+				|| page_trans_compound_anon(*page)) {
+				flush_anon_page(vma, *page, slot->address);
+				flush_dcache_page(*page);
+				rmap_item = get_next_rmap_item(slot);
+			
+				if (rmap_item) {
+					slot->address += PAGE_SIZE;
+				} else
+					put_page(*page);	
+				up_read(&mm->mmap_sem);
+				return rmap_item;
+			}
+			put_page(*page);
+			slot->address += PAGE_SIZE;
+			cond_resched();
+		}
+	}
+
+	reset_mm_slot_address(slot);
+	
+	spin_lock(&sksm_mmlist_lock);
+	if (ksm_test_exit(mm)){
+		hlist_del(&slot->link);
+		list_del(&slot->mm_list);
+		sksm_scan.mm_slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
+		spin_unlock(&sksm_mmlist_lock);
+		remove_trailing_rmap_items(&slot->rmap_list);
+		free_mm_slot(slot);
+		slot = sksm_scan.mm_slot;
+		mmdrop(mm);
+	} else {
+		// when reach here, we get no rmap_items to this mm_slot. so, walk to the next mm_slot
+		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
+		sksm_scan.mm_slot = slot;
+		spin_unlock(&sksm_mmlist_lock);
+	}
+	
+	up_read(&mm->mmap_sem);
+		
+	if(slot != &sksm_mm_head )
+		goto again;  // now let's go to the next mm_slot.
+
+	output("Exit scan_get_next_rmap_item_f0pages.\n");
 
 	return NULL;
 }
@@ -2212,7 +2485,7 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		}
 
 		index = left + random32() % gap_len;
-		output("left: %d, right: %d, hit: %d\n", left, right, index);
+	//	output("left: %d, right: %d, hit: %d\n", left, right, index);
 		address = vma_node->start + (index << 12);
 		
 		while (*item && ((*item)->address & PAGE_MASK) < address)
@@ -2336,8 +2609,7 @@ static void sksm_do_recruit(unsigned int nr)
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
 		spin_unlock(&sksm_mmlist_lock);
 	}
-}
-
+} 
 /**
  * sksm_do_scan  - the ksm scanner main worker function.
  * @scan_npages - number of pages we want to scan before we return.
@@ -2349,7 +2621,11 @@ static void sksm_do_scan(unsigned int scan_npages)
 
 	while (scan_npages && likely(!freezing(current))) {
 		cond_resched();
-		rmap_item = scan_get_next_rmap_item(&page);
+		if ( sksm_run != SKSM_RUN_f0PAGES_ONLY) {
+			rmap_item = scan_get_next_rmap_item(&page);
+		} else {
+			rmap_item = scan_get_next_rmap_item_f0pages(&page);
+		}
 		if  (rmap_item) 
 			 output("rmap_item: %lx\n", (unsigned long)rmap_item);
 		if (!rmap_item) {
@@ -2368,8 +2644,10 @@ static void sksm_do_scan(unsigned int scan_npages)
 static int sksmd_should_run(void)
 {
 //	return (sksm_run & SKSM_RUN_MERGE) && !list_empty(&sksm_mm_head.mm_list);
-	int run =  sksm_run & SKSM_RUN_MERGE; // The kthread have get the change to run to recruit new task_t;
-	return run;
+	if ( sksm_run == SKSM_RUN_MERGE || sksm_run == SKSM_RUN_f0PAGES_ONLY )
+		return 1;
+	else
+		return 0;
 }
 
 static int sksm_scan_thread(void *nothing)
@@ -2388,9 +2666,17 @@ static int sksm_scan_thread(void *nothing)
 	while (!kthread_should_stop()) {
 		mutex_lock(&sksm_thread_mutex);
 		if (sksmd_should_run()) {
-			walk_through_tasks();
-			sksm_do_recruit(ksm_thread_processes_to_recruit);
-			sksm_do_scan(ksm_thread_pages_to_scan);
+			if (sksm_run != SKSM_RUN_f0PAGES_ONLY)   
+			{
+				walk_through_tasks();
+				sksm_do_recruit(ksm_thread_processes_to_recruit);
+				sksm_do_scan(ksm_thread_pages_to_scan);
+			}
+			else
+			{
+				walk_through_tasks();
+				sksm_do_scan(ksm_thread_pages_to_scan);
+			}
 			output("###### Heart beat ...\n");
 		}
 		mutex_unlock(&sksm_thread_mutex);
@@ -2405,7 +2691,10 @@ static int sksm_scan_thread(void *nothing)
 				sksmd_should_run() || kthread_should_stop());
 		}
 	} // end of while loop
-
+	
+	preempt_disable();
+	print_the_stable_tree();
+	preempt_enable();
 	err = unmerge_and_remove_all_rmap_items();
 	if (err) {
 		while (1)
@@ -2507,6 +2796,8 @@ static int task_ksm_enter(struct task_struct *task)
 	set_bit(MMF_VM_MERGEABLE, &mm->flags);
 	atomic_inc(&mm->mm_count);   // we have to get a reference count to this mm.
 	spin_unlock(&sksm_mmlist_lock);
+	
+	output("track a new task. mm: %lx.\n", (unsigned long)mm);
 	
 	return 0;
 }
@@ -2851,12 +3142,19 @@ static ssize_t run_store(struct kobject *kobj, struct kobj_attribute *attr,
 			int oom_score_adj;
 
 			oom_score_adj = test_set_oom_score_adj(OOM_SCORE_ADJ_MAX);
+			print_the_stable_tree();
 			err = unmerge_and_remove_all_rmap_items();
 			test_set_oom_score_adj(oom_score_adj);
 			if (err) {
 				sksm_run = SKSM_RUN_STOP;
 				count = err;
 			}
+		}
+
+		if (flags & SKSM_RUN_f0PAGES_ONLY)
+		{
+			err = unmerge_and_remove_all_rmap_items();
+			count = err;
 		}
 	}
 	mutex_unlock(&sksm_thread_mutex);
