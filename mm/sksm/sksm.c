@@ -581,9 +581,21 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 	unsigned long addr = rmap_item->address;
 	struct vm_area_struct *vma;
 	struct page *page;
+	int ret;
+	int die;
 
-	output("down_read. mm:%lx\n", (unsigned long)mm);
-	down_read(&mm->mmap_sem);
+	//output("down_read. mm:%lx\n", (unsigned long)mm);
+	//down_read(&mm->mmap_sem);
+	die = 0;
+	do {
+		ret = down_read_trylock(&mm->mmap_sem);
+		msleep(100);
+		die++;	
+		if(die == 20)
+			break;
+	}while(!ret);
+	if (0 == ret)
+		return NULL;
 	if (ksm_test_exit(mm))
 		goto out;
 	vma = find_vma(mm, addr);
@@ -1320,8 +1332,8 @@ static int memcmp_pages(struct page *page1, struct page *page2)
 	addr1 = kmap_atomic(page1, KM_USER0);
 	//output("kmap_atomic page2:%lx.\n", (unsigned long)page2);
 	addr2 = kmap_atomic(page2, KM_USER1);
-	ret = memcmp(addr1, addr2, PAGE_SIZE);
-	//ret = cmp_x64(addr1, addr2, PAGE_SIZE);
+	//ret = memcmp(addr1, addr2, PAGE_SIZE);
+	ret = cmp_x64(addr1, addr2, PAGE_SIZE);
 	kunmap_atomic(addr2, KM_USER1);
 	kunmap_atomic(addr1, KM_USER0);
 
@@ -2024,10 +2036,10 @@ static void walk_through_tasks(void)
 	struct task_struct *p;
 	char comm[256];
 	int pid_nr;
-	int i, count; 
+	//int i, count; 
 	int matched;
 	//const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
-	const char *task_comms[] = {"mal"};
+	//const char *task_comms[] = {"mal"};
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
@@ -2035,25 +2047,25 @@ static void walk_through_tasks(void)
 		pid_nr = p->pid;
 		matched = 0;	
 		// testing code...
-		count = sizeof(task_comms)/sizeof(task_comms[0]);
+	/*	count = sizeof(task_comms)/sizeof(task_comms[0]);
 		for (i = 0; i < count; i++)
 		{
 			if (0 == strcasecmp(task_comms[i], comm))
 			{
 				matched = 1;
 			}
-		}
-/*		if (SKSM_RUN_F0PAGES_ONLY != sksm_run)
+		}*/
+	//	if (SKSM_RUN_F0PAGES_ONLY != sksm_run)
 		{
 			spin_lock(&processes_to_scan_lock);		
 			matched = process2scan_exist(comm);
 			spin_unlock(&processes_to_scan_lock);		
 		}
-		else
-		{
-			matched = (pid_nr > 100 ? 1 : 0);
-		}
-*/	
+//		else
+//		{
+//			matched = (pid_nr > 100 ? 1 : 0);
+//		}
+
 		if (matched)
 		{
 			//pid_nr = p->pid;
@@ -2247,6 +2259,7 @@ again:
 // This function is for f0pages only.
 static struct rmap_item *get_next_rmap_item(struct mm_slot *slot)
 {
+	char age;
 	struct rmap_item *rmap_item;
 	struct rmap_item **rmap_list;
 	
@@ -2258,7 +2271,12 @@ static struct rmap_item *get_next_rmap_item(struct mm_slot *slot)
 		if ((rmap_item->address & PAGE_MASK) < slot->address)
 		{
 			*rmap_list = rmap_item->rmap_list;
-			//remove_rmap_item_from_tree(rmap_item);
+			if (rmap_item->address & UNSTABLE_FLAG)
+			{
+				age = (unsigned char)(sksm_scan.seqnr - rmap_item->address);
+				if (age) // an old and obsolete rmap_item.
+					remove_rmap_item_from_tree(rmap_item);
+			}
 		}
 	}
 
@@ -2368,16 +2386,16 @@ again:
 		remove_trailing_rmap_items(&slot->rmap_list);
 		free_mm_slot(slot);
 		slot = sksm_scan.mm_slot;
+		up_read(&mm->mmap_sem);
 		mmdrop(mm);
 	} else {
 		// when reach here, we get no rmap_items to this mm_slot. so, walk to the next mm_slot
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
 		sksm_scan.mm_slot = slot;
 		spin_unlock(&sksm_mmlist_lock);
+		up_read(&mm->mmap_sem);
 	}
 	
-	up_read(&mm->mmap_sem);
-		
 	if(slot != &sksm_mm_head )
 		goto again;  // now let's go to the next mm_slot.
 
