@@ -589,12 +589,16 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 	vma = find_vma(mm, addr);
 	if (!vma || vma->vm_start > addr)
 		goto out;
-	if (!(vma->vm_flags & VM_MERGEABLE) || !vma->anon_vma)
+	if (!(vma->vm_flags & VM_MERGEABLE) || !vma->anon_vma) {
+		output("(vma->vm_flags & VM_MERGEABLE) || !vma->anon_vma)\n");
 		goto out;
+	}
 
 	page = follow_page(vma, addr, FOLL_GET);
-	if (IS_ERR_OR_NULL(page))
+	if (IS_ERR_OR_NULL(page)) {
+		output("ERR_OR_NULL page.\n");
 		goto out;
+	}
 	if (PageAnon(page) || page_trans_compound_anon(page)) {
 		flush_anon_page(vma, page, addr);
 		flush_dcache_page(page);
@@ -688,7 +692,8 @@ static void remove_rmap_item_from_tree(struct rmap_item *rmap_item)
 	if (rmap_item->address & STABLE_FLAG) {
 		struct stable_node *stable_node;
 		struct page *page;
-
+		
+		output("Try to remove rmap_item %lx from stable tree.\n", (unsigned long)rmap_item);
 		stable_node = rmap_item->head;
 		page = get_ksm_page(stable_node);
 		if (!page)
@@ -716,10 +721,15 @@ static void remove_rmap_item_from_tree(struct rmap_item *rmap_item)
 		 * if this rmap_item was inserted by this scan, rather
 		 * than left over from before.
 		 */
+		output("Try to remove rmap_item %lx from unstable tree.\n", (unsigned long)rmap_item);
 		age = (unsigned char)(sksm_scan.seqnr - rmap_item->address);
 		// BUG_ON(age > 1);
-		if (!age)
+		if (!age) {
 			rb_erase(&rmap_item->node, &root_unstable_tree);
+			output("remove okay.\n");
+		} else {
+			output("obsolete unstable node.\n");
+		}
 
 		ksm_pages_unshared--;
 		rmap_item->address &= PAGE_MASK;
@@ -1310,8 +1320,8 @@ static int memcmp_pages(struct page *page1, struct page *page2)
 	addr1 = kmap_atomic(page1, KM_USER0);
 	//output("kmap_atomic page2:%lx.\n", (unsigned long)page2);
 	addr2 = kmap_atomic(page2, KM_USER1);
-	//ret = memcmp(addr1, addr2, PAGE_SIZE);
-	ret = cmp_x64(addr1, addr2, PAGE_SIZE);
+	ret = memcmp(addr1, addr2, PAGE_SIZE);
+	//ret = cmp_x64(addr1, addr2, PAGE_SIZE);
 	kunmap_atomic(addr2, KM_USER1);
 	kunmap_atomic(addr1, KM_USER0);
 
@@ -1678,11 +1688,13 @@ static struct page *stable_tree_search(struct page *page)
 
 static int is_f0_page(struct page *page)
 {
-	int i;
+	int i, ret;
 	int zero_page, f_page;
 	u8 *addr;
 
 	zero_page = f_page = 0;
+	ret = 0;
+
 	addr = (u8*)kmap_atomic(page);
 	if (0 == addr[0])
 		zero_page = 1;
@@ -1695,7 +1707,7 @@ static int is_f0_page(struct page *page)
 			if (addr[i] != 0)		
 				goto _out;	
 		}
-		return 1;
+		ret = 1;
 	}
 	else if (f_page){
 		for (i = 1; i < 512; i++)
@@ -1703,13 +1715,13 @@ static int is_f0_page(struct page *page)
 			if (addr[i] != 0xffffffffffffffff)
 				goto _out;
 		}
-		return 1;
+		ret = 1;
 	}
 
 _out:
 	kunmap_atomic(addr);
 
-	return 0;
+	return ret;
 }
 
 static int print_page_content(struct page *page)
@@ -1829,8 +1841,7 @@ static struct stable_node *stable_tree_insert(struct page *kpage)
  * This function does both searching and inserting, because they share
  * the same walking algorithm in an rbtree.
  */
-static
-struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
+static struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 					      struct page *page,
 					      struct page **tree_pagep)
 
@@ -1838,6 +1849,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 	struct rb_node **new = &root_unstable_tree.rb_node;
 	struct rb_node *parent = NULL;
 
+	//output("*new: %lx.\n", (unsigned long)*new);
 	while (*new) {
 		struct rmap_item *tree_rmap_item;
 		struct page *tree_page;
@@ -1883,6 +1895,10 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 	rb_insert_color(&rmap_item->node, &root_unstable_tree);
 
 	ksm_pages_unshared++;
+	output("a new rmap_item has been added to unstable tree.\n");	
+	
+	//new = &root_unstable_tree.rb_node;
+	//output("*new new: %lx.\n", (unsigned long)*new);
 
 	return NULL;
 }
@@ -2008,9 +2024,10 @@ static void walk_through_tasks(void)
 	struct task_struct *p;
 	char comm[256];
 	int pid_nr;
-	//int i, count; 
+	int i, count; 
 	int matched;
 	//const char *task_comms[] = {"mal", "gnome-terminal", "epiphany-browse"};
+	const char *task_comms[] = {"mal"};
 
 	read_lock(&tasklist_lock);
 	for_each_process(p) {
@@ -2018,15 +2035,15 @@ static void walk_through_tasks(void)
 		pid_nr = p->pid;
 		matched = 0;	
 		// testing code...
-	/*	count = sizeof(task_comms)/sizeof(task_comms[0]);
+		count = sizeof(task_comms)/sizeof(task_comms[0]);
 		for (i = 0; i < count; i++)
 		{
 			if (0 == strcasecmp(task_comms[i], comm))
 			{
 				matched = 1;
 			}
-		}*/
-		if (SKSM_RUN_F0PAGES_ONLY != sksm_run)
+		}
+/*		if (SKSM_RUN_F0PAGES_ONLY != sksm_run)
 		{
 			spin_lock(&processes_to_scan_lock);		
 			matched = process2scan_exist(comm);
@@ -2036,7 +2053,7 @@ static void walk_through_tasks(void)
 		{
 			matched = (pid_nr > 100 ? 1 : 0);
 		}
-	
+*/	
 		if (matched)
 		{
 			//pid_nr = p->pid;
@@ -2083,6 +2100,7 @@ again:
 		}*/
 		root_unstable_tree = RB_ROOT;
 		sksm_scan.seqnr++;
+		output("reset root_unstable_tree.");
 
 		spin_lock(&sksm_mmlist_lock);
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
@@ -2240,7 +2258,7 @@ static struct rmap_item *get_next_rmap_item(struct mm_slot *slot)
 		if ((rmap_item->address & PAGE_MASK) < slot->address)
 		{
 			*rmap_list = rmap_item->rmap_list;
-			remove_rmap_item_from_tree(rmap_item);
+			//remove_rmap_item_from_tree(rmap_item);
 		}
 	}
 
