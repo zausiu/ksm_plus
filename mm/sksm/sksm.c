@@ -762,7 +762,7 @@ static void remove_trailing_rmap_items(struct rmap_item **rmap_list)
 
 static void reset_mm_slot_address(struct mm_slot *slot)
 {
-	struct rmap_item *rmap_item;
+	/*struct rmap_item *rmap_item;
 	struct rmap_item **rmap_list;
 	rmap_list = &slot->rmap_list;
 
@@ -773,7 +773,7 @@ static void reset_mm_slot_address(struct mm_slot *slot)
 		else
 			break;
 	}
-	remove_trailing_rmap_items(rmap_list);
+	remove_trailing_rmap_items(rmap_list); */
 	slot->address = 0;
 }
 
