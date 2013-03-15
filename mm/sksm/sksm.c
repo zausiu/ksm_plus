@@ -153,16 +153,17 @@ struct unstable_node {
 struct rmap_item {
 	struct rmap_item *rmap_list;
 	struct mm_struct *mm;
+	u16 oldchecksum;
+	u16 reserved;	
 	unsigned long address;		/* + low bits used for flags below */
+	struct anon_vma *anon_vma;	/* when stable */
 	union {
 		struct {
-			u16 oldchecksum;
 			struct rb_node node;  /* when node of unstable tree */
 		};
 		struct {		/* when listed from stable tree */
 			struct stable_node *head;
 			struct hlist_node hlist;
-			struct anon_vma *anon_vma;	/* when stable */
 		};
 	};
 };
@@ -275,11 +276,11 @@ static unsigned int sksm_thread_sleep_millisecs = 1000;
 #define SKSM_RUN_STOP	        0
 #define SKSM_RUN_MERGE	        1
 #define SKSM_RUN_UNMERGE	2
-//static unsigned int sksm_run = SKSM_RUN_STOP;
-static unsigned int sksm_run = SKSM_RUN_MERGE;
+static unsigned int sksm_run = SKSM_RUN_STOP;
+//static unsigned int sksm_run = SKSM_RUN_MERGE;
 
 // handle special_page_only.
-static unsigned int special_pages_only = 1;
+static unsigned int special_pages_only = 0;
 
 static DECLARE_WAIT_QUEUE_HEAD(sksm_thread_wait);
 static DEFINE_MUTEX(sksm_thread_mutex);
@@ -541,6 +542,7 @@ static void break_cow(struct rmap_item *rmap_item)
 	put_anon_vma(rmap_item->anon_vma);
 
 	down_read(&mm->mmap_sem);
+	output("down_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	if (ksm_test_exit(mm))
 		goto out;
 	vma = find_vma(mm, addr);
@@ -551,6 +553,7 @@ static void break_cow(struct rmap_item *rmap_item)
 	break_ksm(vma, addr);
 out:
 	up_read(&mm->mmap_sem);
+	output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 }
 
 static struct page *page_trans_compound_anon(struct page *page)
@@ -576,7 +579,7 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 	//int ret;
 	//int die;
 
-	output("down_read. mm:%lx\n", (unsigned long)mm);
+	output("down_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	down_read(&mm->mmap_sem);
 	/*die = 0;
 	do {
@@ -608,6 +611,7 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 out:		page = NULL;
 	}
 	up_read(&mm->mmap_sem);
+	output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	return page;
 }
 
@@ -1048,8 +1052,10 @@ static int unmerge_and_remove_all_rmap_items(void)
         while (mm_slot != &sksm_mm_head)
 	{
                 mm = mm_slot->mm;
+		output("down_read. mm:%lx\n", (unsigned long)mm);
                 down_read(&mm->mmap_sem);
 		if (ksm_test_exit(mm)) {
+			output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 			up_read(&mm->mmap_sem);
 			continue;
 		}
@@ -1059,11 +1065,13 @@ static int unmerge_and_remove_all_rmap_items(void)
                         err = unmerge_ksm_pages(vma,
                                                 vma->vm_start, vma->vm_end);
                         if (err) {
+				output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 				up_read(&mm->mmap_sem);
                                 goto _out;
 			}
                 }
 		up_read(&mm->mmap_sem);
+		output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 
 		spin_lock(&sksm_mmlist_lock);
 		mm_slot = list_entry(mm_slot->mm_list.next, struct mm_slot, mm_list);
@@ -1504,6 +1512,7 @@ static int try_to_merge_with_ksm_page(struct rmap_item *rmap_item,
 	int err = -EFAULT;
 
 	down_read(&mm->mmap_sem);
+	output("down_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	if (ksm_test_exit(mm))
 		goto out;
 	vma = find_vma(mm, rmap_item->address);
@@ -1524,6 +1533,7 @@ static int try_to_merge_with_ksm_page(struct rmap_item *rmap_item,
 	output("get_anon_vma okay.\n");
 out:
 	up_read(&mm->mmap_sem);
+	output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	return err;
 }
 
@@ -1938,6 +1948,7 @@ again:
 	
 	mm = slot->mm;
 	down_read(&mm->mmap_sem);	
+	output("down_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	if (ksm_test_exit(mm)) {   // the process has exited.
 		// the current mm_slot will be invalid, so we move to the next mm_slot.
 		spin_lock(&sksm_mmlist_lock);
@@ -1947,6 +1958,7 @@ again:
 		nuke_mm_slot(slot);
 		clear_bit(MMF_VM_MERGEABLE, &mm->flags);
 		up_read(&mm->mmap_sem);
+		output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 		mmdrop(mm);
 
 		goto again;
@@ -2014,6 +2026,7 @@ again:
 				flush_anon_page(vma, *page, item->address);
 				flush_dcache_page(*page);
 				up_read(&mm->mmap_sem);
+				output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 				nuke_vma_node_from_stack(slot, &stack);
 				clear_invalid_rmap_items(current_vma_node);
 				
@@ -2047,6 +2060,7 @@ again:
 	} // end of for loop. walk through all vam_node.
 
 	up_read(&mm->mmap_sem);
+	output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	nuke_vma_node_from_stack(slot, &stack);  // clear the invalid vma_node.
 
 	slot->curr = NULL;
@@ -2399,11 +2413,13 @@ static void sksm_do_recruit(unsigned int nr)
 		mm = slot->mm;
 
 		down_read(&mm->mmap_sem);
+		output("down_read %lx.\n", (unsigned long)&mm->mmap_sem);
 		// At current only one postion in ksmd is responsible to free mm_slot.
 		// Return imediately, so let it have the chance sooner.
 		if (ksm_test_exit(mm)) 
 		{
 			up_read(&mm->mmap_sem);
+			output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 			return;
 		}
 		for (vma = mm->mmap; vma; vma = vma->vm_next)
@@ -2413,6 +2429,7 @@ static void sksm_do_recruit(unsigned int nr)
 			}
 		}
 		up_read(&mm->mmap_sem);
+		output("up_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	
 		spin_lock(&sksm_mmlist_lock);
 		slot = list_entry(slot->mm_list.next, struct mm_slot, mm_list);
@@ -2499,8 +2516,10 @@ static int sksm_scan_thread(void *nothing)
 			if (slot == &sksm_mm_head)
 				break;
 			down_read(&slot->mm->mmap_sem);
+			output("down_read %lx.\n", (unsigned long)&slot->mm->mmap_sem);
 			nuke_mm_slot(slot);
 			up_read(&slot->mm->mmap_sem);
+			output("up_read %lx.\n", (unsigned long)&slot->mm->mmap_sem);
 			mmdrop(slot->mm);
 		}
 	}
