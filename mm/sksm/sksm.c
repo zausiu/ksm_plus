@@ -573,12 +573,12 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 	unsigned long addr = rmap_item->address;
 	struct vm_area_struct *vma;
 	struct page *page;
-	int ret;
-	int die;
+	//int ret;
+	//int die;
 
-	//output("down_read. mm:%lx\n", (unsigned long)mm);
-	//down_read(&mm->mmap_sem);
-	die = 0;
+	output("down_read. mm:%lx\n", (unsigned long)mm);
+	down_read(&mm->mmap_sem);
+	/*die = 0;
 	do {
 		ret = down_read_trylock(&mm->mmap_sem);
 		msleep(100);
@@ -587,7 +587,7 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 			break;
 	}while(!ret);
 	if (0 == ret)
-		return NULL;
+		return NULL;*/
 
 	if (ksm_test_exit(mm))
 		goto out;
