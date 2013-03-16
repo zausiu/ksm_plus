@@ -183,7 +183,7 @@ static struct hlist_head mm_slots_hash[MM_SLOTS_HASH_HEADS];
 
 // data structures for processes_to_scan.
 static DEFINE_SPINLOCK(processes_to_scan_lock);
-LIST_HEAD(processes_to_scan_head);
+static LIST_HEAD(processes_to_scan_head);
 struct process_to_scan
 {
 	char* comm;
@@ -399,6 +399,7 @@ static inline struct process_to_scan *alloc_process_to_scan(void)
 
 static inline void free_process_to_scan(struct process_to_scan *pts)
 {
+	BUG_ON(pts->comm);
 	kmem_cache_free(processes_to_scan_cache, pts);
 }
 
@@ -420,6 +421,7 @@ static void destroy_processes_to_scan(void)
 	list_for_each_entry_safe(pts, pts2, &processes_to_scan_head, list)
 	{
 		kfree(pts->comm);
+		pts->comm = NULL;
 		list_del(&pts->list);
 		free_process_to_scan(pts);
 	}
@@ -601,8 +603,10 @@ static struct page *get_mergeable_page(struct rmap_item *rmap_item)
 		goto out;
 
 	page = follow_page(vma, addr, FOLL_GET);
-	if (IS_ERR_OR_NULL(page))
+	if (IS_ERR_OR_NULL(page)) {
+		output("follow_page failed.\n");
 		goto out;
+	}
 	if (PageAnon(page) || page_trans_compound_anon(page)) {
 		flush_anon_page(vma, page, addr);
 		flush_dcache_page(page);
@@ -2018,6 +2022,7 @@ again:
 			*page = follow_page(current_vma_node->vma, item->address, FOLL_GET);
 			if ( IS_ERR_OR_NULL(*page)){
 				// failed...
+				output("follow_page failed.\n");
 				item->address |= INVALID_FLAG;  // mark the address as invalid.
 				continue;
 			}
@@ -2311,8 +2316,10 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		}
 
 		page = follow_page(vma_node->vma, address, FOLL_GET);	
-		if (IS_ERR_OR_NULL(page))	
+		if (IS_ERR_OR_NULL(page)) {
+			output("follow_page failed. page:%lx\n", (unsigned long)page);
 			continue; 
+		}
 		a = kmap_atomic(page);
 		if (special_pages_only)
 			special_page = is_special_page(a);
@@ -2345,9 +2352,6 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		//output("push new address %lx\n", (unsigned long)address);
 	}
 			
-	if (1 < vma_node->coefficient)
-		vma_node->coefficient--;
-	
 	// clear the trailing rmap_items.
 	while (*item)
 	{
@@ -2384,6 +2388,9 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			 (unsigned long)vma_node->vma, pages_count, nr, vma_node->coefficient);
 	}
 	
+	vma_node->coefficient -= 5;
+	if (vma_node->coefficient > 100 || vma_node->coefficient < 1)
+		vma_node->coefficient = 1;
 }
 
 static void sksm_do_recruit(unsigned int nr)
@@ -3092,6 +3099,7 @@ static ssize_t processes_to_scan_store(struct kobject *kobj,
 			{
 				list_del(&pts->list);
 				kfree(pts->comm);
+				pts->comm = NULL;
 				free_process_to_scan(pts);
 				output("remove okay.\n");
 				goto _out;
