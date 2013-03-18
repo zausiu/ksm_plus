@@ -52,8 +52,9 @@
 // pre-declarations.
 struct rmap_item;
 struct vma_node;
+struct mm_slot;
 static int task_ksm_enter(struct task_struct *task);
-static void vma_node_do_sampling(struct vma_node *vma_node);
+static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node);
 
 /**
  * @sample_coefficient this value specifies how to take sample from the
@@ -70,10 +71,10 @@ struct vma_node {
 	unsigned long end;
 	struct rmap_item *rmap_list;
 	struct rmap_item *rmap_current;
+	u8 coefficient;  // 1 -- 100
 	//u32 *samples;
 	//unsigned int sample_len;
 //	u8 sample_coefficient;    
-	u8 coefficient;  // 1 -- 100
 };
 
 
@@ -271,7 +272,7 @@ static unsigned int ksm_thread_pages_to_scan = 100;
 static unsigned int ksm_thread_processes_to_recruit = 4;
 
 /* Milliseconds ksmd should sleep between batches */
-static unsigned int sksm_thread_sleep_millisecs = 1000;
+static unsigned int sksm_thread_sleep_millisecs = 600;
 
 #define SKSM_RUN_STOP	        0
 #define SKSM_RUN_MERGE	        1
@@ -883,7 +884,7 @@ static int is_mergeable_vma(struct vm_area_struct *vma)
 {
 	unsigned long flags = vma->vm_flags;
 	int pages_count;
-	if (flags & ( VM_SHARED  | VM_MAYSHARE   |
+	if (flags & ( VM_NOT_MERGEABLE | VM_SHARED  | VM_MAYSHARE   |
 				VM_PFNMAP    | VM_IO      | VM_DONTEXPAND |
 				VM_RESERVED  | VM_HUGETLB | VM_INSERTPAGE |
 				VM_NONLINEAR | VM_MIXEDMAP | VM_SAO))
@@ -933,6 +934,7 @@ static void nuke_vma_node_from_stack(struct mm_slot *mm_slot, struct tiny_stack 
 		remove_trailing_rmap_items(&vma_node->rmap_list);
 		BUG_ON(vma_node->rmap_list);
 		nuke_vma_node(mm_slot, vma_node);
+		output("vma_node %lx has been evicted.\n", (unsigned long)vma_node);
 	}
 }
 
@@ -1974,6 +1976,16 @@ again:
 	}
 	else
 	{
+		// clear the evicted vma_node.
+	/*	for (rb_node = rb_first(&slot->vma_root); rb_node; rb_node = rb_next(rb_node))
+		{
+			struct vma_node *vn = rb_entry(rb_node, struct vma_node, node);
+			if (vn->vma->vm_flags & VM_NOT_MERGEABLE){
+				push_tiny_stack(&stack, (void*)vn);
+				output("vma_node %lx has been evicted.\n", (unsigned long)vn);
+			}
+		}*/
+
 		rb_node = rb_first(&slot->vma_root);
 		slot->curr = rb_entry(rb_node, struct vma_node, node);
 		output("Go to the first vma_node %lx.\n", (unsigned long)rb_node);
@@ -1994,11 +2006,16 @@ again:
 			// output("vma %lx does not exist.\n", (unsigned long)current_vma_node->vma);
 			continue;
 		}
+		if (current_vma_node->vma->vm_flags & VM_NOT_MERGEABLE)
+		{
+			push_tiny_stack(&stack, (void*)current_vma_node);
+			continue;
+		}
 
 		if (!is_valid_rmap_item_pointer(current_vma_node, current_vma_node->rmap_current))
 		{
 			current_vma_node->rmap_current = current_vma_node->rmap_list;
-			vma_node_do_sampling(current_vma_node);
+			vma_node_do_sampling(slot, current_vma_node);
 			continue;
 		}
 		
@@ -2240,12 +2257,13 @@ again:
 }
 */
 
-static void vma_node_do_sampling(struct vma_node *vma_node)
+static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 {
 	int pages_count, sample_count;
 	int gap_len;
 	int left/*include*/, right/*exclude*/;
 	int index;
+	int stable_node_count;
 	unsigned long address, addr;
 	struct rmap_item **item;
 	struct rmap_item *new;
@@ -2253,6 +2271,10 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 	void *a;
 	u16 checksum;
 
+	if (vma_node->vma->vm_flags & VM_NOT_MERGEABLE)
+		return 0;
+
+	stable_node_count = 0;
 	BUG_ON(0 == vma_node->coefficient);
 	if (special_pages_only)
 		vma_node->coefficient = 100;
@@ -2363,7 +2385,6 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 			if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
 			{
 				struct rmap_item *ri = *item;
-				output("Ask: %lx, but %lx now\n", (unsigned long)address, (unsigned long)addr);
 				*item = ri->rmap_list;			 
 				remove_rmap_item_from_tree(ri);
 				free_rmap_item(ri);	
@@ -2375,22 +2396,48 @@ static void vma_node_do_sampling(struct vma_node *vma_node)
 		item = &(*item)->rmap_list;
 	}
 
-	// for debug's purpose.
-	if ( vma_node->rmap_list )
+	if (vma_node->rmap_list)
 	{
 		int nr = 0;
 		struct rmap_item *item = vma_node->rmap_list;
 		while ( item ){
+			addr = item->address;
+			if(addr & STABLE_FLAG) 
+			{
+				stable_node_count++;
+			}
 			nr++;
 			item = item->rmap_list;
 		}
-		output("vma %lx pages_count: %d rmap_items_count: %d coefficient: %d\n",
-			 (unsigned long)vma_node->vma, pages_count, nr, vma_node->coefficient);
+		// for debug's purpose.
+		output("vma_node %lx pages_count: %d rmap_items_count: %d coefficient: %d stable_node_count: %d\n",
+			 (unsigned long)vma_node, pages_count, nr, vma_node->coefficient, stable_node_count);
 	}
 	
-	vma_node->coefficient -= 5;
+	vma_node->coefficient -= 15;
 	if (vma_node->coefficient > 100 || vma_node->coefficient < 1)
 		vma_node->coefficient = 1;
+
+	// if we have gone so far but still no pages have been merged in this area.
+        // so we tag this vma_node as evicted and make it to be nuked soon.
+	// We cannot nuke it here 'cos if we do so it will break the rb_tree which
+	// links all the vma_nodes.
+	if (0 == stable_node_count && vma_node->coefficient < 10)
+	{
+		struct rmap_item *item;
+		while (vma_node->rmap_list)
+		{
+			item = vma_node->rmap_list;
+			vma_node->rmap_list = item->rmap_list;
+			remove_rmap_item_from_tree(item);	
+			free_rmap_item(item);
+		}
+		vma_node->vma->vm_flags |= VM_NOT_MERGEABLE;
+		//nuke_vma_node(slot, vma_node); 
+		return 1;
+	}
+
+	return 0;
 }
 
 static void sksm_do_recruit(unsigned int nr)
