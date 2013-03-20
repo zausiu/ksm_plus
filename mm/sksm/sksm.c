@@ -45,9 +45,12 @@
 #include <asm/tlbflush.h>
 //#include "mm/internal.h"
 
+/*
 #define output(msg, args...) do {                   \
 	printk(KERN_DEBUG"sksm [%s]"msg, __func__, ##args); \
-}while(0)
+}while(0)*/
+
+#define output(msg, args...)
 
 // pre-declarations.
 struct rmap_item;
@@ -352,6 +355,7 @@ static inline struct rmap_item *alloc_rmap_item(void)
 	rmap_item = kmem_cache_zalloc(rmap_item_cache, GFP_KERNEL);
 	if (rmap_item)
 		ksm_rmap_items++;
+	output("alloc_rmap_item okay. %lx\n", (unsigned long)rmap_item);
 	return rmap_item;
 }
 
@@ -361,6 +365,7 @@ static inline void free_rmap_item(struct rmap_item *rmap_item)
 	rmap_item->mm = NULL;	/* debug safety */
 	rmap_item->address = 0xdddddd; /*my poison, for debug.*/
 	kmem_cache_free(rmap_item_cache, rmap_item);
+	output("free_rmap_item okay. %lx\n", (unsigned long)rmap_item);
 }
 
 static inline struct stable_node *alloc_stable_node(void)
@@ -544,8 +549,8 @@ static void break_cow(struct rmap_item *rmap_item)
 	 */
 	put_anon_vma(rmap_item->anon_vma);
 
+	output("down_read(%lx). mm: %lx\n", (unsigned long)&mm->mmap_sem, (unsigned long)mm);
 	down_read(&mm->mmap_sem);
-	output("down_read %lx.\n", (unsigned long)&mm->mmap_sem);
 	if (ksm_test_exit(mm))
 		goto out;
 	vma = find_vma(mm, addr);
@@ -1715,7 +1720,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			output("get_mergeable_page failed.\n");
 			return NULL;
 		}
-		output("get_mergeable_page okay.\n");
+		//output("get_mergeable_page okay.\n");
 
 		/*
 		 * Don't substitute a ksm page for a forked page.
@@ -2333,7 +2338,13 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			addr = ((*item)->address & PAGE_MASK);
 			if (addr == address) {
 				item = &(*item)->rmap_list;
+				output("hit the same rmap_item.\n");
 				continue;
+			}
+			else
+			{
+				output("(*item)->address:%lx address:%lx \n", 
+					(*item)->address, address);
 			}
 		}
 
@@ -2359,6 +2370,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			output("alloc_rmap_item failed.\n");		
 			continue;
 		}
+		//output("alloc_rmap_item okay.\n");
 		new->mm = vma_node->vma->vm_mm;
 		new->address = address;
 		if (*item)
@@ -2414,7 +2426,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			 (unsigned long)vma_node, pages_count, nr, vma_node->coefficient, stable_node_count);
 	}
 	
-	vma_node->coefficient -= 15;
+	vma_node->coefficient -= 20;
 	if (vma_node->coefficient > 100 || vma_node->coefficient < 1)
 		vma_node->coefficient = 1;
 
@@ -3062,8 +3074,17 @@ KSM_ATTR_RO(pages_shared);
 static ssize_t pages_sharing_show(struct kobject *kobj,
 				  struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%lu\n", ksm_pages_sharing);
+	int count;
+	int saved_mem;
+	count = sprintf(buf, "%lu\n", ksm_pages_sharing);
+	saved_mem = (ksm_pages_sharing - ksm_pages_shared)*4;
+	if (saved_mem)
+		count += sprintf(buf+count, "about %dK memory has been saved.\n", saved_mem);
+	else
+		count += sprintf(buf+count, "no memory has been saved at present.\n");
+	return count;
 }
+	
 KSM_ATTR_RO(pages_sharing);
 
 static ssize_t pages_unshared_show(struct kobject *kobj,
@@ -3191,7 +3212,6 @@ static struct task_struct *sksm_thread;
 int __init sksm_init(void)
 {
 	int err;
-
 	err = sksm_slab_init();
 	if (err)
 		goto out;
