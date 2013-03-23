@@ -45,13 +45,13 @@
 #include <asm/tlbflush.h>
 //#include "mm/internal.h"
 
-/*
+
 #define output(msg, args...) do {                   \
 	printk(KERN_DEBUG"sksm [%s]"msg, __func__, ##args); \
 }while(0)
-*/
 
-#define output(msg, args...)
+
+//#define output(msg, args...)
 
 // pre-declarations.
 struct rmap_item;
@@ -940,7 +940,7 @@ static void nuke_vma_node_from_stack(struct mm_slot *mm_slot, struct tiny_stack 
 		remove_trailing_rmap_items(&vma_node->rmap_list);
 		BUG_ON(vma_node->rmap_list);
 		nuke_vma_node(mm_slot, vma_node);
-		output("vma_node %lx has been evicted.\n", (unsigned long)vma_node);
+		output("nuke vma_node %lx has been evicted.\n", (unsigned long)vma_node);
 	}
 }
 
@@ -2327,10 +2327,10 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		{
 			addr = (*item)->address;
 			// smaller then the current sample and it's not in stable_tree.
-			//if(!(addr & STABLE_FLAG)) 
-			//{
+			if(!(addr & STABLE_FLAG)) 
+			{
 				char seqnr = (addr & SEQNR_MASK);
-				if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
+			//	if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
 				{
 					struct rmap_item *ri = *item;
 					output("Ask: %lx, but %lx now\n", (unsigned long)address, (unsigned long)addr);
@@ -2340,7 +2340,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 					output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 					continue;
 				}
-			//}
+			}
 			else
 			{
 				output("I am in stable tree %lx.\n", (unsigned long)addr);
@@ -2435,7 +2435,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			}
 			nr++;
 			item = item->rmap_list;
-			output("ADDRESS %lx\n", (unsigned long)addr);
+			// output("ADDRESS %lx\n", (unsigned long)addr);
 		}
 		// for debug's purpose.
 		output("vma_node %lx pages_count: %d rmap_items_count: %d coefficient: %d stable_node_count: %d\n",
@@ -2461,6 +2461,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			free_rmap_item(item);
 		}
 		vma_node->vma->vm_flags |= VM_NOT_MERGEABLE;
+		output("im gonna nuck this vma_node. %lx\n", (unsigned long)vma_node);
 		//nuke_vma_node(slot, vma_node); 
 		return 1;
 	}
