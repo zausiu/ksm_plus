@@ -48,7 +48,8 @@
 /*
 #define output(msg, args...) do {                   \
 	printk(KERN_DEBUG"sksm [%s]"msg, __func__, ##args); \
-}while(0)*/
+}while(0)
+*/
 
 #define output(msg, args...)
 
@@ -910,7 +911,7 @@ static int is_mergeable_vma(struct vm_area_struct *vma)
 		return 0;
 
 	pages_count = (((u64)vma->vm_end - (u64)vma->vm_start)>>12);
-	if (pages_count < 8 || pages_count > 0xffff)
+	if (pages_count < 8 ) // || pages_count > 0xffff)
 	{
 		//printk(KERN_EMERG"a huge anonymous vm_area encountered. MM address: %lX\n", vma->vm_mm);
 		return 0;
@@ -1698,8 +1699,7 @@ static struct stable_node *stable_tree_insert(struct page *kpage)
  * This function does both searching and inserting, because they share
  * the same walking algorithm in an rbtree.
  */
-static
-struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
+static struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 					      struct page *page,
 					      struct page **tree_pagep)
 
@@ -1720,7 +1720,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			output("get_mergeable_page failed.\n");
 			return NULL;
 		}
-		//output("get_mergeable_page okay.\n");
+		output("get_mergeable_page okay.\n");
 
 		/*
 		 * Don't substitute a ksm page for a forked page.
@@ -1730,7 +1730,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			return NULL;
 		}
 		ret = memcmp_pages(page, tree_page);
-		//output("memcmp_pages return %d.\n", ret);
+		output("memcmp_pages return %d.\n", ret);
 
 		parent = *new;
 		if (ret < 0) {
@@ -1897,7 +1897,8 @@ static void walk_through_tasks(void)
 		matched = process2scan_exist(comm);
 		spin_unlock(&processes_to_scan_lock);		
 	
-		if (matched)
+		if (matched || special_pages_only)
+		//if (matched)
 		{
 			//pid_nr = p->pid;
 			//output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
@@ -2363,6 +2364,8 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		// sampling special pages only.
 		if (!special_page && special_pages_only)
 			continue;
+		else if (special_pages_only)
+			output("got a special page.\n");
 
 		new = alloc_rmap_item();	
 		if (NULL == new)
@@ -2667,7 +2670,8 @@ static int task_ksm_enter(struct task_struct *task)
 		output("alloc_mm_slot failed.\n");
 		return -ENOMEM;
 	}
-	
+
+	output("alloc_mm_slot okay.\n");	
 	spin_lock(&sksm_mmlist_lock);
 	insert_to_mm_slots_hash(mm, mm_slot);
 	list_add_tail(&mm_slot->mm_list, &sksm_scan.mm_slot->mm_list);
@@ -3077,7 +3081,8 @@ static ssize_t pages_sharing_show(struct kobject *kobj,
 	int count;
 	int saved_mem;
 	count = sprintf(buf, "%lu\n", ksm_pages_sharing);
-	saved_mem = (ksm_pages_sharing - ksm_pages_shared)*4;
+	//saved_mem = (ksm_pages_sharing - ksm_pages_shared)*4;
+	saved_mem = ksm_pages_sharing*4;
 	if (saved_mem)
 		count += sprintf(buf+count, "about %dK memory has been saved.\n", saved_mem);
 	else

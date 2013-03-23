@@ -48,7 +48,8 @@
 /*
 #define output(msg, args...) do {                   \
 	printk(KERN_DEBUG"sksm [%s]"msg, __func__, ##args); \
-}while(0)*/
+}while(0)
+*/
 
 #define output(msg, args...)
 
@@ -275,7 +276,7 @@ static unsigned int ksm_thread_pages_to_scan = 100;
 static unsigned int ksm_thread_processes_to_recruit = 4;
 
 /* Milliseconds ksmd should sleep between batches */
-static unsigned int sksm_thread_sleep_millisecs = 600;
+static unsigned int sksm_thread_sleep_millisecs = 60;
 
 #define SKSM_RUN_STOP	        0
 #define SKSM_RUN_MERGE	        1
@@ -355,7 +356,7 @@ static inline struct rmap_item *alloc_rmap_item(void)
 	rmap_item = kmem_cache_zalloc(rmap_item_cache, GFP_KERNEL);
 	if (rmap_item)
 		ksm_rmap_items++;
-	output("alloc_rmap_item okay. %lx\n", (unsigned long)rmap_item);
+	//output("alloc_rmap_item okay. %lx\n", (unsigned long)rmap_item);
 	return rmap_item;
 }
 
@@ -365,7 +366,7 @@ static inline void free_rmap_item(struct rmap_item *rmap_item)
 	rmap_item->mm = NULL;	/* debug safety */
 	rmap_item->address = 0xdddddd; /*my poison, for debug.*/
 	kmem_cache_free(rmap_item_cache, rmap_item);
-	output("free_rmap_item okay. %lx\n", (unsigned long)rmap_item);
+	//output("free_rmap_item okay. %lx\n", (unsigned long)rmap_item);
 }
 
 static inline struct stable_node *alloc_stable_node(void)
@@ -910,7 +911,7 @@ static int is_mergeable_vma(struct vm_area_struct *vma)
 		return 0;
 
 	pages_count = (((u64)vma->vm_end - (u64)vma->vm_start)>>12);
-	if (pages_count < 8 || pages_count > 0xffff)
+	if (pages_count < 8 ) // || pages_count > 0xffff)
 	{
 		//printk(KERN_EMERG"a huge anonymous vm_area encountered. MM address: %lX\n", vma->vm_mm);
 		return 0;
@@ -1698,8 +1699,7 @@ static struct stable_node *stable_tree_insert(struct page *kpage)
  * This function does both searching and inserting, because they share
  * the same walking algorithm in an rbtree.
  */
-static
-struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
+static struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 					      struct page *page,
 					      struct page **tree_pagep)
 
@@ -1720,7 +1720,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			output("get_mergeable_page failed.\n");
 			return NULL;
 		}
-		//output("get_mergeable_page okay.\n");
+		output("get_mergeable_page okay.\n");
 
 		/*
 		 * Don't substitute a ksm page for a forked page.
@@ -1730,7 +1730,7 @@ struct rmap_item *unstable_tree_search_insert(struct rmap_item *rmap_item,
 			return NULL;
 		}
 		ret = memcmp_pages(page, tree_page);
-		//output("memcmp_pages return %d.\n", ret);
+		output("memcmp_pages return %d.\n", ret);
 
 		parent = *new;
 		if (ret < 0) {
@@ -1897,6 +1897,7 @@ static void walk_through_tasks(void)
 		matched = process2scan_exist(comm);
 		spin_unlock(&processes_to_scan_lock);		
 	
+		//if (matched || special_pages_only)
 		if (matched)
 		{
 			//pid_nr = p->pid;
@@ -2290,6 +2291,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 	gap_len = pages_count / sample_count ;
 	left = right = 0;
 	item = &vma_node->rmap_list;
+	output("sample_count: %d\n", sample_count);
 
 	/*if (vma_node->coefficient < 100){
 		output("return immediately.\n");
@@ -2297,6 +2299,15 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		return;
 	}*/
 
+	// for debug's purpose.
+	/*while (*item)
+	{
+		addr = (*item)->address;
+		output("Begin ADDRESS: %lx\n", (unsigned long)addr);
+		item = &(*item)->rmap_list;
+	}*/
+
+	item = &vma_node->rmap_list;
 	while (1)
 	{
 		int special_page;
@@ -2311,7 +2322,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		index = left + random32() % gap_len;
 		//output("left: %d, right: %d, hit: %d\n", left, right, index);
 		address = vma_node->start + (index << 12);
-		
+		output("I ask: %lx.\n", (unsigned long)address);
 		while (*item && ((*item)->address & PAGE_MASK) < address)
 		{
 			addr = (*item)->address;
@@ -2326,10 +2337,14 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 					*item = ri->rmap_list;			 
 					remove_rmap_item_from_tree(ri);
 					free_rmap_item(ri);	
-					//output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
+					output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 					continue;
 				}
 
+			}
+			else
+			{
+				output("I am in stable tree %lx.\n", (unsigned long)addr);
 			}
 			item = &(*item)->rmap_list;
 		}
@@ -2343,8 +2358,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			}
 			else
 			{
-				output("(*item)->address:%lx address:%lx \n", 
-					(*item)->address, address);
+				output("(*item)->address:%lx address:%lx \n", (*item)->address, address);
 			}
 		}
 
@@ -2363,6 +2377,8 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		// sampling special pages only.
 		if (!special_page && special_pages_only)
 			continue;
+		else if (special_pages_only)
+			output("got a special page.\n");
 
 		new = alloc_rmap_item();	
 		if (NULL == new)
@@ -2370,11 +2386,11 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			output("alloc_rmap_item failed.\n");		
 			continue;
 		}
-		//output("alloc_rmap_item okay.\n");
+		output("alloc_rmap_item okay.\n");
 		new->mm = vma_node->vma->vm_mm;
 		new->address = address;
 		if (*item)
-			new->rmap_list = (*item)->rmap_list;
+			new->rmap_list = *item;
 		else
 			new->rmap_list = NULL;
 		
@@ -2400,7 +2416,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 				*item = ri->rmap_list;			 
 				remove_rmap_item_from_tree(ri);
 				free_rmap_item(ri);	
-				//output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
+				output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 				continue;
 			}
 		}
@@ -2420,6 +2436,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			}
 			nr++;
 			item = item->rmap_list;
+			output("ADDRESS %lx\n", (unsigned long)addr);
 		}
 		// for debug's purpose.
 		output("vma_node %lx pages_count: %d rmap_items_count: %d coefficient: %d stable_node_count: %d\n",
@@ -2667,7 +2684,8 @@ static int task_ksm_enter(struct task_struct *task)
 		output("alloc_mm_slot failed.\n");
 		return -ENOMEM;
 	}
-	
+
+	output("alloc_mm_slot okay.\n");	
 	spin_lock(&sksm_mmlist_lock);
 	insert_to_mm_slots_hash(mm, mm_slot);
 	list_add_tail(&mm_slot->mm_list, &sksm_scan.mm_slot->mm_list);
@@ -3077,7 +3095,8 @@ static ssize_t pages_sharing_show(struct kobject *kobj,
 	int count;
 	int saved_mem;
 	count = sprintf(buf, "%lu\n", ksm_pages_sharing);
-	saved_mem = (ksm_pages_sharing - ksm_pages_shared)*4;
+	//saved_mem = (ksm_pages_sharing - ksm_pages_shared)*4;
+	saved_mem = ksm_pages_sharing*4;
 	if (saved_mem)
 		count += sprintf(buf+count, "about %dK memory has been saved.\n", saved_mem);
 	else
