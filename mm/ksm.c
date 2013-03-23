@@ -276,7 +276,7 @@ static unsigned int ksm_thread_pages_to_scan = 100;
 static unsigned int ksm_thread_processes_to_recruit = 4;
 
 /* Milliseconds ksmd should sleep between batches */
-static unsigned int sksm_thread_sleep_millisecs = 600;
+static unsigned int sksm_thread_sleep_millisecs = 20;
 
 #define SKSM_RUN_STOP	        0
 #define SKSM_RUN_MERGE	        1
@@ -356,7 +356,7 @@ static inline struct rmap_item *alloc_rmap_item(void)
 	rmap_item = kmem_cache_zalloc(rmap_item_cache, GFP_KERNEL);
 	if (rmap_item)
 		ksm_rmap_items++;
-	output("alloc_rmap_item okay. %lx\n", (unsigned long)rmap_item);
+	//output("alloc_rmap_item okay. %lx\n", (unsigned long)rmap_item);
 	return rmap_item;
 }
 
@@ -366,7 +366,7 @@ static inline void free_rmap_item(struct rmap_item *rmap_item)
 	rmap_item->mm = NULL;	/* debug safety */
 	rmap_item->address = 0xdddddd; /*my poison, for debug.*/
 	kmem_cache_free(rmap_item_cache, rmap_item);
-	output("free_rmap_item okay. %lx\n", (unsigned long)rmap_item);
+	//output("free_rmap_item okay. %lx\n", (unsigned long)rmap_item);
 }
 
 static inline struct stable_node *alloc_stable_node(void)
@@ -1897,8 +1897,8 @@ static void walk_through_tasks(void)
 		matched = process2scan_exist(comm);
 		spin_unlock(&processes_to_scan_lock);		
 	
-		if (matched || special_pages_only)
-		//if (matched)
+		//if (matched || special_pages_only)
+		if (matched)
 		{
 			//pid_nr = p->pid;
 			//output("@@@@@@@@@ Get %s's pid: %d\n", comm, pid_nr);
@@ -2291,6 +2291,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 	gap_len = pages_count / sample_count ;
 	left = right = 0;
 	item = &vma_node->rmap_list;
+	output("sample_count: %d\n", sample_count);
 
 	/*if (vma_node->coefficient < 100){
 		output("return immediately.\n");
@@ -2298,6 +2299,15 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		return;
 	}*/
 
+	// for debug's purpose.
+	/*while (*item)
+	{
+		addr = (*item)->address;
+		output("Begin ADDRESS: %lx\n", (unsigned long)addr);
+		item = &(*item)->rmap_list;
+	}*/
+
+	item = &vma_node->rmap_list;
 	while (1)
 	{
 		int special_page;
@@ -2312,13 +2322,13 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		index = left + random32() % gap_len;
 		//output("left: %d, right: %d, hit: %d\n", left, right, index);
 		address = vma_node->start + (index << 12);
-		
+		output("I ask: %lx.\n", (unsigned long)address);
 		while (*item && ((*item)->address & PAGE_MASK) < address)
 		{
 			addr = (*item)->address;
 			// smaller then the current sample and it's not in stable_tree.
-			if(!(addr & STABLE_FLAG)) 
-			{
+			//if(!(addr & STABLE_FLAG)) 
+			//{
 				char seqnr = (addr & SEQNR_MASK);
 				if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
 				{
@@ -2327,10 +2337,13 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 					*item = ri->rmap_list;			 
 					remove_rmap_item_from_tree(ri);
 					free_rmap_item(ri);	
-					//output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
+					output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 					continue;
 				}
-
+			//}
+			else
+			{
+				output("I am in stable tree %lx.\n", (unsigned long)addr);
 			}
 			item = &(*item)->rmap_list;
 		}
@@ -2344,8 +2357,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			}
 			else
 			{
-				output("(*item)->address:%lx address:%lx \n", 
-					(*item)->address, address);
+				output("(*item)->address:%lx address:%lx \n", (*item)->address, address);
 			}
 		}
 
@@ -2373,11 +2385,11 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			output("alloc_rmap_item failed.\n");		
 			continue;
 		}
-		//output("alloc_rmap_item okay.\n");
+		output("alloc_rmap_item okay.\n");
 		new->mm = vma_node->vma->vm_mm;
 		new->address = address;
 		if (*item)
-			new->rmap_list = (*item)->rmap_list;
+			new->rmap_list = *item;
 		else
 			new->rmap_list = NULL;
 		
@@ -2403,7 +2415,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 				*item = ri->rmap_list;			 
 				remove_rmap_item_from_tree(ri);
 				free_rmap_item(ri);	
-				//output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
+				output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 				continue;
 			}
 		}
@@ -2423,6 +2435,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			}
 			nr++;
 			item = item->rmap_list;
+			output("ADDRESS %lx\n", (unsigned long)addr);
 		}
 		// for debug's purpose.
 		output("vma_node %lx pages_count: %d rmap_items_count: %d coefficient: %d stable_node_count: %d\n",
@@ -3207,7 +3220,7 @@ static struct attribute *sksm_attrs[] = {
 
 static struct attribute_group sksm_attr_group = {
 	.attrs = sksm_attrs,
-	.name = "ksm",
+	.name = "sksm",
 };
 #endif /* CONFIG_SYSFS */
 

@@ -276,7 +276,7 @@ static unsigned int ksm_thread_pages_to_scan = 100;
 static unsigned int ksm_thread_processes_to_recruit = 4;
 
 /* Milliseconds ksmd should sleep between batches */
-static unsigned int sksm_thread_sleep_millisecs = 60;
+static unsigned int sksm_thread_sleep_millisecs = 20;
 
 #define SKSM_RUN_STOP	        0
 #define SKSM_RUN_MERGE	        1
@@ -2327,8 +2327,8 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 		{
 			addr = (*item)->address;
 			// smaller then the current sample and it's not in stable_tree.
-			if(!(addr & STABLE_FLAG)) 
-			{
+			//if(!(addr & STABLE_FLAG)) 
+			//{
 				char seqnr = (addr & SEQNR_MASK);
 				if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
 				{
@@ -2340,8 +2340,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 					output("rmap_item %lx has been evicted.\n", (unsigned long)ri);
 					continue;
 				}
-
-			}
+			//}
 			else
 			{
 				output("I am in stable tree %lx.\n", (unsigned long)addr);
