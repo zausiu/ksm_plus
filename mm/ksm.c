@@ -45,8 +45,8 @@
 #include <asm/tlbflush.h>
 //#include "mm/internal.h"
 
-
-/*#define output(msg, args...) do {                   \
+/*
+#define output(msg, args...) do {                   \
 	printk(KERN_DEBUG"sksm [%s]"msg, __func__, ##args); \
 }while(0)
 */
@@ -2333,7 +2333,6 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			//	if ( !(addr & UNSTABLE_FLAG) || seqnr - sksm_scan.seqnr >= 1) 
 				{
 					struct rmap_item *ri = *item;
-					output("Ask: %lx, but %lx now\n", (unsigned long)address, (unsigned long)addr);
 					*item = ri->rmap_list;			 
 					remove_rmap_item_from_tree(ri);
 					free_rmap_item(ri);	
@@ -2461,7 +2460,7 @@ static int vma_node_do_sampling(struct mm_slot *slot, struct vma_node *vma_node)
 			free_rmap_item(item);
 		}
 		vma_node->vma->vm_flags |= VM_NOT_MERGEABLE;
-		output("im gonna nuck this vma_node. %lx\n", (unsigned long)vma_node);
+		output("im gonna nuke this vma_node. %lx\n", (unsigned long)vma_node);
 		//nuke_vma_node(slot, vma_node); 
 		return 1;
 	}
@@ -3221,7 +3220,7 @@ static struct attribute *sksm_attrs[] = {
 
 static struct attribute_group sksm_attr_group = {
 	.attrs = sksm_attrs,
-	.name = "ksm",
+	.name = "ksm+",
 };
 #endif /* CONFIG_SYSFS */
 
