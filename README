@@ -1,3 +1,10 @@
+	NOTICE:
+	This project is old and dead.
+	Project uksm is much more advanced and brilliant which is intended to do the same thing.
+	Search "uksm Nai Xia" for details ~~
+	
+	//////////////////////////////////////
+	
 	Memory management is one of the most important parts of the operating system.
 	KSM (Kernel Samepage Merging) in Linux kernel is a kind of memory saving technology developed after the emerging of virtual machine.
 	KSM can dramatically decrease the memory usage of the hypervisor running several virtual machines.
