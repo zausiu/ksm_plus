@@ -1,2 +1,15 @@
-	Memory management is one of the most important parts of the operating system. KSM (Kernel Samepage Merging) in Linux kernel is a kind of memory saving technology developed after the emerging of virtual machine. KSM can dramatically decrease the memory usage of the hypervisor running several virtual machines. Actually, KSM can also be applied to normal applications. But in order to use the KSM, application must explicitly evoke a system call in source code level to tell KSM the memory area where the KSM will scan. To normal users, modifying the source code is impossible at most of the time.
-	Base on the full grasp of the implementation of KSM, a new implementation named KSM+ is created, which allows users to merge same-content pages on the specified applications without modifying corresponding source code. Moreover, the original KSM algorithm relies heavily on the specified area is rich in same-content pages, while normal applications have much less same-content pages compared to virtual machines. So, when KSM is applied to those applications, it is possible that memory usage will rise rather than decrease. To combat with this situation, KSM+ employs a new algorithm to decrease the memory usage for running itself. Several experiments prove that the KSM+ can be easily applied to specified applications and memory usage can be reduced. And a case is designed to compare the effect between KSM and KSM+, which shows KSM+ behaves better in deduplication when the same-content pages’ density is very low. At last, in order to inspect the characteristics of same-content pages from normal desktop applications, an ad-hoc kernel module is developed to do the statistics which supplies significant data for the further development of KSM+.
+	Memory management is one of the most important parts of the operating system.
+	KSM (Kernel Samepage Merging) in Linux kernel is a kind of memory saving technology developed after the emerging of virtual machine.
+	KSM can dramatically decrease the memory usage of the hypervisor running several virtual machines.
+	Actually, KSM can also be applied to normal applications. But in order to use the KSM, application must explicitly evoke a system call in source code level to tell
+	KSM the memory area where the KSM will scan.
+	To normal users, modifying the source code is impossible at most of the time.
+	Base on the full grasp of the implementation of KSM, a new implementation named KSM+ is created,
+	which allows users to merge same-content pages on the specified applications without modifying corresponding source code.
+	Moreover, the original KSM algorithm relies heavily on the specified area is rich in same-content pages, while normal applications have much less same-content pages compared to virtual machines. 
+	So, when KSM is applied to those applications, it is possible that memory usage will rise rather than decrease. 
+	To combat with this situation, KSM+ employs a new algorithm to decrease the memory usage for running itself. 
+	Several experiments prove that the KSM+ can be easily applied to specified applications and memory usage can be reduced. 
+	And a case is designed to compare the effect between KSM and KSM+, which shows KSM+ behaves better in deduplication when the same-content pages’ density is very low.
+	At last, in order to inspect the characteristics of same-content pages from normal desktop applications, an ad-hoc kernel module is developed to do the statistics which supplies significant data 
+	for the further development of KSM+.
